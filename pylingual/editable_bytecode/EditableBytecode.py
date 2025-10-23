@@ -575,7 +575,8 @@ class EditableBytecode:
         # fix exception table offsets
         self.exception_table = {start.offset: (end.offset, target.offset) for start, (end, target) in temp_exception_table.items()}
         if temp_named_exception_table:
-            self.named_exception_table = [_ExceptionTableEntry(start.offset, end.offset, target.offset, depth, lasti) for (start, end, target, depth, lasti) in temp_named_exception_table]
+            # also delete entries that will never trigger (end is non-inclusive)
+            self.named_exception_table = [_ExceptionTableEntry(start.offset, end.offset, target.offset, depth, lasti) for (start, end, target, depth, lasti) in temp_named_exception_table if start.offset < end.offset]
         self._add_inst_exception_attrs()
 
         self._edited = True
