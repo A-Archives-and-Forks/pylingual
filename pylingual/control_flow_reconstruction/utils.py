@@ -325,6 +325,7 @@ class N:
 class _Ns(N):
     def __init__(self, a: N, b: N):
         self.nodes = [a, b]
+        self._auto_exc = any(x._auto_exc for x in self.nodes)
 
     @override
     def _build(self, name) -> NodeMatcher:
