@@ -149,7 +149,7 @@ class TryElse3_11(ControlFlowTemplate):
         try_header=N("try_body"),
         try_body=N("try_else.", None, "except_body"),
         except_body=N("tail.", None, "reraise").with_in_deg(1).of_subtemplate(Except3_11),
-        try_else=~N("tail.").with_in_deg(1).with_cond(has_some_lines),
+        try_else=N("tail.").with_in_deg(1).with_cond(has_some_lines) | ~N("tail.").with_in_deg(1).with_cond(has_some_lines) ,
         reraise=reraise,
         tail=N.tail(),
     )
@@ -186,15 +186,27 @@ class BareExcept3_11(Except3_11):
         reraise=reraise,
         tail=N.tail(),
     )
-
-    try_match = make_try_match(
-        {
-            EdgeKind.Fall: "tail",
-            EdgeKind.Exception: "reraise",
-        },
-        "except_body",
-        "except_footer",
+    template2 = T(
+        except_body=N("except_footer.", None, "reraise").with_cond(without_top_level_instructions("RERAISE")),
+        except_footer=~N("tail.").with_in_deg(1).with_cond(starting_instructions("POP_EXCEPT")),
+        reraise=reraise,
+        tail=N(E.meta("end")).with_in_deg(1).with_cond(has_no_lines),
+        end=N.tail()
     )
+
+    @classmethod
+    @override
+    def try_match(cls, cfg, node) -> ControlFlowTemplate | None:
+        members = ["except_body", "except_footer"]
+        mapping = cls.template2.try_match(cfg, node)
+        if mapping is None:
+            mapping = cls.template.try_match(cfg, node)
+            if mapping is None:
+                return None
+        else:
+            members.append("tail")
+        template = condense_mapping(cls, cfg, mapping, *members)
+        return template
 
     @to_indented_source
     def to_indented_source():
@@ -256,7 +268,7 @@ class ExceptExc3_11(Except3_11):
     template = T(
         except_header=N("except_body", "no_match", "reraise").with_cond(ending_instructions("CHECK_EXC_MATCH", "POP_JUMP_FORWARD_IF_FALSE"), ending_instructions("CHECK_EXC_MATCH", "POP_JUMP_IF_FALSE")),
         except_body=N("except_footer.", None, "reraise").of_subtemplate(ExcBody3_11).with_in_deg(1),
-        no_match=N("tail?", None, "reraise").with_in_deg(1).of_subtemplate(Except3_11),
+        no_match=N("tail.", None, "reraise").with_in_deg(1).of_subtemplate(Except3_11),
         except_footer=~N("tail.").with_in_deg(1).with_cond(starting_instructions("SWAP", "POP_EXCEPT"), starting_instructions("POP_EXCEPT")),
         reraise=reraise,
         tail=N.tail(),
