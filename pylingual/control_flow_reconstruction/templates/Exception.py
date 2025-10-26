@@ -326,9 +326,9 @@ class TryFinally3_11(ControlFlowTemplate):
             f = BlockTemplate([f])
         if not isinstance(g, BlockTemplate):
             g = BlockTemplate([g])
-        if isinstance(g.members[0], InstTemplate) and g.members[0].inst.opname == "PUSH_EXC_INFO":
+        if g.members and isinstance(g.members[0], InstTemplate) and g.members[0].inst.opname == "PUSH_EXC_INFO":
             g.members.pop(0)
-        if isinstance(g.members[-1], InstTemplate) and g.members[-1].inst.opname == "RERAISE":
+        if g.members and isinstance(g.members[-1], InstTemplate) and g.members[-1].inst.opname == "RERAISE":
             g.members.pop()
         x = None
         for x, y in zip(f.members, g.members):
@@ -564,7 +564,7 @@ class TryFinally3_9(ControlFlowTemplate):
             f = BlockTemplate([f])
         if not isinstance(g, BlockTemplate):
             g = BlockTemplate([g])
-        if isinstance(g.members[-1], InstTemplate) and g.members[-1].inst.opname == "RERAISE":
+        if g.members and isinstance(g.members[-1], InstTemplate) and g.members[-1].inst.opname == "RERAISE":
             g.members.pop()
         x = None
         for x, y in zip(f.members, g.members):
