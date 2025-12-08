@@ -219,6 +219,9 @@ class Masker:
             if inst.is_jump:
                 jump_direction_indicator = "v~>" if inst.target.offset > inst.offset else "^~>"
                 view = f"{inst.opname} {inst.argrepr} {jump_direction_indicator}"
+            elif inst.opname == "LOAD_SMALL_INT":
+                # Treat LOAD_SMALL_INT (X) like LOAD_CONST
+                view = f"{inst.opname} , {self.mask(inst.argval)}"
             elif inst.optype is None or inst.optype == "??" or inst.optype == "encoded_arg":
                 # don't mask IS_OP args
                 view = f"{inst.opname} , {inst.argrepr if inst.argrepr else inst.argval}"

@@ -39,6 +39,13 @@ def create_global_masker(bytecode: EditableBytecode) -> Masker:
 
         # create consts
         consts = list(deepcopy(bc_co.co_consts))
+
+        # add LOAD_SMALL_INT values to consts (3.14+)
+        if bytecode.version >= (3, 14):
+            for inst in bytecode.instructions:
+                if inst.opname == "LOAD_SMALL_INT" and inst.argval not in consts:
+                    consts.append(inst.argval)
+
         while consts:
             const = consts.pop(0)
             # Don't mask None
