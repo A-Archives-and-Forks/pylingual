@@ -41,8 +41,8 @@ def create_global_masker(bytecode: EditableBytecode) -> Masker:
         consts = list(deepcopy(bc_co.co_consts))
 
         # add LOAD_SMALL_INT values to consts (3.14+)
-        if bytecode.version >= (3, 14):
-            for inst in bytecode.instructions:
+        if bc.version >= (3, 14):
+            for inst in bc.instructions:
                 if inst.opname == "LOAD_SMALL_INT" and inst.argval not in consts:
                     consts.append(inst.argval)
 
@@ -50,6 +50,9 @@ def create_global_masker(bytecode: EditableBytecode) -> Masker:
             const = consts.pop(0)
             # Don't mask None
             if const is None:
+                continue
+            # Don't needlessly increment the global_idx
+            if const in global_tab:
                 continue
             if type(const) in (list, tuple, frozenset, set):
                 consts.extend(const)
