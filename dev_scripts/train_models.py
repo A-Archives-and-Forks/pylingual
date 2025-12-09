@@ -4,7 +4,7 @@
 #   "pylingual",
 # ]
 # [tool.uv.sources]
-# pylingual = { path = "../" }
+# pylingual = { path = "../", editable = true }
 # ///
 
 import logging
@@ -27,7 +27,8 @@ def train_segmentation(segmentation_config_path: pathlib.Path, logger: logging.L
     logger.info("training masked language model...")
     subprocess.run(
         [
-            "uv", "run",
+            "uv",
+            "run",
             "torchrun",
             f"--nnodes={nnodes}",
             f"--nproc-per-node={nproc_per_node}",
@@ -47,7 +48,8 @@ def train_segmentation(segmentation_config_path: pathlib.Path, logger: logging.L
     logger.info("training segmentation model...")
     subprocess.run(
         [
-            "uv", "run",
+            "uv",
+            "run",
             "torchrun",
             f"--nnodes={nnodes}",
             f"--nproc-per-node={nproc_per_node}",
@@ -74,7 +76,8 @@ def train_statement(statement_config_path: pathlib.Path, logger: logging.Logger,
     logger.info("training statement model...")
     subprocess.run(
         [
-            "uv", "run",
+            "uv",
+            "run",
             "torchrun",
             f"--nnodes={nnodes}",
             f"--nproc-per-node={nproc_per_node}",
