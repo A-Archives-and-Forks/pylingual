@@ -73,6 +73,13 @@ def create_global_masker(bytecode: EditableBytecode) -> Masker:
             global_tab.update({free: f"<mask_{global_idx}>"})
             global_idx += 1
 
+        if bc.version >= (3, 11):
+            for cell in bc_co.co_cellvars:
+                if cell in global_tab:
+                    continue
+                global_tab.update({cell: f"<mask_{global_idx}>"})
+                global_idx += 1
+
         for local in bc_co.co_varnames:
             if local in global_tab:
                 continue
