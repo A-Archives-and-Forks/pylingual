@@ -100,3 +100,6 @@ docstring-code-line-length = "dynamic"
 members = [
     "pylingual/tools",
 ]
+
+[tool.uv.sources]
+xdis = { git = "https://github.com/jdw170000/python-xdis", rev = "python-3.14" }

@@ -69,7 +69,7 @@ class Masker:
 
     def mask(self, tok):
         """Mask a token, must be in the global_table."""
-        return self.global_tab[tok] if not any(tok == t and type(tok) == type(t) for t in self.blacklist) else tok
+        return self.global_tab[tok] if not any(tok == t and type(tok) is type(t) for t in self.blacklist) else tok
 
     def unmask(self, value):
         """Unmask a token, value must be a metatoken value in the global_table; or this function will fail loudly"""

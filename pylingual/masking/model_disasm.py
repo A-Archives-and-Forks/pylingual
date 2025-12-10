@@ -43,7 +43,7 @@ def create_global_masker(bytecode: EditableBytecode) -> Masker:
         # add LOAD_SMALL_INT values to consts (3.14+)
         if bc.version >= (3, 14):
             for inst in bc.instructions:
-                if inst.opname == "LOAD_SMALL_INT" and inst.argval not in consts:
+                if inst.opname == "LOAD_SMALL_INT":  # duplicate consts will be filtered out later
                     consts.append(inst.argval)
 
         while consts:

@@ -1,4 +1,5 @@
 import ast
+import sys
 import re
 import copy
 from pylingual.masking.global_masker import Masker
@@ -28,7 +29,10 @@ class customUnparser(ast._Unparser):
 
     def visit_FormattedValue(self, node):
         def unparse_inner(inner):
-            unparser = type(self)(self.masker, _avoid_backslashes=True)
+            if PythonVersion(sys.version_info) <= (3, 11):
+                unparser = type(self)(self.masker, _avoid_backslashes=True)
+            else:
+                unparser = type(self)(self.masker)
             unparser.set_precedence(ast._Precedence.TEST.next(), inner)
             return unparser.visit(inner)
 
