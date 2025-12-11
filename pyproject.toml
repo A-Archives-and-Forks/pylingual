@@ -102,4 +102,4 @@ members = [
 ]
 
 [tool.uv.sources]
-xdis = { git = "https://github.com/jdw170000/python-xdis", rev = "python-3.14-dev" }
+xdis = { git = "https://github.com/jdw170000/python-xdis", rev = "python-3.14" }
