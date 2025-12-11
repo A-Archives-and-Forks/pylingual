@@ -50,7 +50,7 @@ class CFG(DiGraph_CFT):
             if source is not None and n.inst.starts_line is not None:
                 n.inst.source_line = source[n.inst.starts_line - 1]
             else:
-                n.inst.source_line = ''
+                n.inst.source_line = ""
 
         for _a, _b, _p in self.edges(data=True):
             self[_a][_b]["kind"] = EdgeKind(_p["type"])
@@ -155,7 +155,9 @@ class CFG(DiGraph_CFT):
     def _create_dominator_tree(self):
         self._dt = nx.create_empty_copy(self)
         self._dt.add_edges_from(nx.immediate_dominators(self, self.start).items())
-        self._dt.remove_edge(self.start, self.start)
+        # In NetworkX 3.5 and below, the start node dominates itself; this was changed in NetworkX 3.6
+        if self._dt.has_edge(self.start, self.start):
+            self._dt.remove_edge(self.start, self.start)
         self._dr = nx.transitive_closure_dag(self._dt.reverse())
 
     def dominates(self, node_a, node_b):
@@ -192,7 +194,10 @@ class CFG(DiGraph_CFT):
         self.add_edges_from((n, self.end, EdgeKind.Meta.prop()) for n in self.nodes if all(e["kind"] is EdgeKind.Exception for _, _, e in self.out_edges(n, data=True)))
         pdt = nx.create_empty_copy(self)
         pdt.add_edges_from((B, A) for A, B in nx.immediate_dominators(self.reverse(), self.end).items())
-        pdt.remove_edge(self.end, self.end)
+
+        # In NetworkX 3.5 and below, the start node dominates itself; this was changed in NetworkX 3.6
+        if pdt.has_edge(self.end, self.end):
+            pdt.remove_edge(self.end, self.end)
         pdr = nx.transitive_closure_dag(pdt)
         postdominates = lambda A, B: pdr.has_edge(A, B) or A == B
         control_dependent = lambda A, B: 0 < sum(postdominates(A, succ) for succ in self.successors(B)) < self.out_degree(B)
