@@ -67,7 +67,8 @@ class SourceContext:
         for bc in self.pyc.iter_bytecodes():
             cft = self.cfts[bc.codeobj]
             if bc.codeobj.co_flags & inspect.CO_NEWLOCALS:
-                if bc.codeobj.co_consts and isinstance(bc.codeobj.co_consts[0], str):
+                has_docstring_314 = bool(bc.codeobj.co_flags & 2**26) # inspect.CO_HAS_DOCSTRING flag introduced in Python 3.14
+                if (self.pyc.version < (3, 14) or has_docstring_314) and bc.codeobj.co_consts and isinstance(bc.codeobj.co_consts[0], str):
                     doc = use_escape_sequences(bc.codeobj.co_consts[0])
                     cft.add_header(f'"""{doc}"""')
             if bc.codeobj.co_flags & (inspect.CO_GENERATOR | inspect.CO_ASYNC_GENERATOR):
