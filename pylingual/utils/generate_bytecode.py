@@ -12,7 +12,7 @@ import shutil
 from pylingual.utils.version import PythonVersion
 
 
-UV_VERSIONS = {PythonVersion((3, x)) for x in range(8, 14)}
+UV_VERSIONS = {PythonVersion((3, x)) for x in range(8, 15)}
 
 
 class CompileError(Exception):
@@ -35,12 +35,12 @@ def _compile_native(py_file: str, out_file: str):
 def _compile_uv(py_file: str, out_file: str, version: PythonVersion):
     compile_cmd = f"import py_compile, sys; assert sys.version_info[:2] == {version.as_tuple()!r}; py_compile.compile({py_file!r}, cfile={out_file!r})"
 
-    cmd = ["uvx", "--python", version.as_str(), "python", "-c", compile_cmd]
+    cmd = ["uvx", "--no-config", "--python", version.as_str(), "python", "-c", compile_cmd]
 
     output = subprocess.run(cmd, shell=False, capture_output=True, text=True, env={**os.environ, "PYTHONWARNINGS": "ignore"})
 
     # Ignore stderr messages from uv downloading versions on demand
-    stderr = re.sub(r'Downloading .+\n', '', output.stderr)
+    stderr = re.sub(r"\s*Download(ing|ed)\s.+\n", "", output.stderr)
     if stderr:
         raise CompileError(stderr)
 
@@ -94,7 +94,3 @@ def compile_version(py_file, out_file, version):
         _compile_uv(py_file=py_file, out_file=out_file, version=version)
     else:
         _compile_pyenv(py_file=py_file, out_file=out_file, version=version)
-    
-    
-
-
