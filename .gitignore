@@ -1,4 +1,6 @@
 dataset/
+cache-dir/
+model-jsons/
 venv/
 .venv/
 *.pyc
@@ -18,3 +20,4 @@ mise.toml
 dist/
 decompiled_*/
 decompiled_*.py
+
