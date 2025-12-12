@@ -33,6 +33,7 @@ dependencies = [
     "xdis>=6.1.4",
     "click",
     "evaluate",
+    "tensorboardx>=2.6.4",
 ]
 
 [project.urls]
