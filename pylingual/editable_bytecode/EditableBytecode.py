@@ -88,7 +88,7 @@ class EditableBytecode:
         if self.version >= (3, 13):
             self.fix_make_function_argval()
 
-        low_information_instruction_blacklist = ["RESUME", "EXTENDED_ARG", "CACHE", "PRECALL", "MAKE_CELL"]
+        low_information_instruction_blacklist = ["RESUME", "EXTENDED_ARG", "CACHE", "PRECALL", "MAKE_CELL", "NOT_TAKEN"]
         self.remove_instructions({inst for inst in self.instructions if inst.opname in low_information_instruction_blacklist})
 
         # updates attribute of instructions that contains information about the exception table
