@@ -1,5 +1,5 @@
 from ..cft import ControlFlowTemplate, EdgeKind, MetaTemplate, register_template
-from ..utils import E, T, N, defer_source_to, has_some_lines, run_is, has_no_lines, with_instructions, exact_instructions, has_instval, starting_instructions, to_indented_source, make_try_match, without_top_level_instructions, ending_instructions
+from ..utils import E, T, N, defer_source_to, has_some_lines, run_is, has_no_lines, versions_from, with_instructions, exact_instructions, has_instval, starting_instructions, to_indented_source, make_try_match, without_top_level_instructions, ending_instructions
 from .Loop import BreakTemplate, ContinueTemplate
 
 class EarlyRet(ControlFlowTemplate):
@@ -80,7 +80,7 @@ class IfElseJump(ControlFlowTemplate):
         """
 
 
-@register_template(1, 39, (3, 12), (3, 13))
+@register_template(1, 39, *versions_from(3, 12))
 class IfElseLoop(ControlFlowTemplate):
     template = T(
         if_header=~N("else_body", "if_body").with_cond(without_top_level_instructions("WITH_EXCEPT_START", "CHECK_EXC_MATCH", "FOR_ITER")),

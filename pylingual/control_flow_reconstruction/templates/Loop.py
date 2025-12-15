@@ -181,7 +181,7 @@ class WhileElse3_10(ControlFlowTemplate):
         """
 
 
-@register_template(0, 1, (3, 12), (3, 13))
+@register_template(0, 1, *versions_from(3, 12))
 class WhileElse3_12(ControlFlowTemplate):
     template = T(
         while_header=~N("while_body", "else_body"),
