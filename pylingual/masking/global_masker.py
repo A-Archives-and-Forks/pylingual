@@ -56,6 +56,8 @@ class Masker:
     blacklist = [
         "__doc__",
         "__annotations__",
+        "__conditional_annotations__",
+        "__annotate__",
         "__qualname__",
         "__class__",
         "return",  # for return annotations
@@ -101,6 +103,8 @@ class Masker:
                 func_info.append("annotations")
         if bool(flags_make_func & 0b1000):  # b_free_vars
             func_info.append("closures")
+        if bool(flags_make_func & 0b10000):  # annotate function
+            func_info.append("annotations-func")
 
         # flags from the target code object
         flags_co = int(target_co.co_flags)

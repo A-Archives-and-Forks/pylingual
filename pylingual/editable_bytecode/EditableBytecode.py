@@ -88,8 +88,12 @@ class EditableBytecode:
         if self.version >= (3, 13):
             self.fix_make_function_argval()
 
-        low_information_instruction_blacklist = ["RESUME", "EXTENDED_ARG", "CACHE", "PRECALL", "MAKE_CELL", "NOT_TAKEN"]
+        low_information_instruction_blacklist = ["RESUME", "EXTENDED_ARG", "CACHE", "PRECALL", "MAKE_CELL", "NOT_TAKEN", "COPY_FREE_VARS"]
         self.remove_instructions({inst for inst in self.instructions if inst.opname in low_information_instruction_blacklist})
+
+        # inline __annotate__ functions, which were added in python 3.14
+        if self.version >= (3, 14):
+            self.inline_annotate_functions()
 
         # updates attribute of instructions that contains information about the exception table
         self._add_inst_exception_attrs()
@@ -114,6 +118,48 @@ class EditableBytecode:
                     inst.argval = next_inst.argval
                 else:
                     inst.argval = 0
+
+    def inline_annotate_functions(self):
+        """In Python 3.14, type annotations are stored in implicit __annotate__ functions. This function inlines them."""
+        #  (opname, argval) pairs
+        # fmt: off
+        ANNOTATE_FUNC_PREAMBLE = (
+            ("LOAD_FAST_BORROW", "format"),
+            ("LOAD_SMALL_INT", 2),
+            ("COMPARE_OP", ">"),
+            ("POP_JUMP_IF_FALSE", 12),
+            ("LOAD_COMMON_CONSTANT", 1), # NotImplementedError
+            ("RAISE_VARARGS", 1), # exception instance
+        )
+        # fmt: on
+
+        def is_annotate_func_and_get_inlinable_insts(codeobj) -> tuple[bool, list[Inst]]:
+            if not iscode(codeobj):
+                return (False, [])
+            if not codeobj.co_name == "__annotate__":
+                return (False, [])
+            target_bc = EditableBytecode(codeobj, self.opcode, self.version)
+            target_preamble = tuple((inst.opname, inst.argval) for inst in target_bc.instructions[: len(ANNOTATE_FUNC_PREAMBLE)])
+            if target_preamble != ANNOTATE_FUNC_PREAMBLE:
+                return (False, [])
+            return (True, target_bc.instructions[len(ANNOTATE_FUNC_PREAMBLE) : -1])  # skip the RETURN_VALUE at the end
+
+        # iterate over all instructions
+        # replace any load_consts that load __annotate functions with the function's instructions, minus the return and the prefix
+        inline_dict = {}
+        for inst in self.instructions:
+            if inst.opname == "LOAD_CONST":
+                is_annotate_func, inlinable_insts = is_annotate_func_and_get_inlinable_insts(inst.argval)
+                if not is_annotate_func:
+                    continue
+
+                inline_dict[inst] = inlinable_insts
+
+        for inst, inlinable_insts in inline_dict.items():
+            target_idx = self.instructions.index(inst)
+            self.insert_insts(target_idx + 1, inlinable_insts)
+            self.remove_instructions({inst})
+            self.co_consts[inst.arg] = None  # remove the __annotate__ function, but don't impact co_consts offsets
 
     def get_recursive_length(self):
         """Returns the recursive length of this bytecode and all its descendents"""
@@ -582,6 +628,71 @@ class EditableBytecode:
         self._edited = True
 
         return len(to_remove)
+
+    def insert_insts(self, idx: int, to_insert: list[Inst]) -> int:
+        """Inserts the specified list of instructions at the specified index."""
+
+        if len(to_insert) == 0:
+            return 0
+
+        if idx < 0 or idx > len(self.instructions):
+            raise IndexError("Index out of range")
+
+        self.regenerate()
+        self._edited = True
+
+        # store a list of all jumps to avoid repeatedly searching for them
+        jumps = [inst for inst in self.instructions if inst.is_jump]
+
+        # store an instruction-based copy of the exception table to make offset fixing easier at the end
+        temp_exception_table = {self.get_by_offset(start): (self.get_by_offset(end), self.get_by_offset(target)) for start, (end, target) in self.exception_table.items()}
+        temp_named_exception_table = dict()
+        if self.named_exception_table:
+            temp_named_exception_table = [(self.get_by_offset(e.start), self.get_by_offset(e.end), self.get_by_offset(e.target), e.depth, e.lasti) for e in self.named_exception_table]
+
+        # insert instructions
+        self.instructions = self.instructions[:idx] + to_insert + self.instructions[idx:]
+
+        for inst in to_insert:
+            # add names and consts
+            if inst.optype == "const":
+                if inst.argval not in self.co_consts:
+                    self.co_consts.append(inst.argval)
+                inst.arg = self.co_consts.index(inst.argval)
+            elif inst.optype == "name":
+                if inst.argval not in self.co_names:
+                    self.co_names.append(inst.argval)
+                inst.arg = self.co_names.index(inst.argval)
+            elif inst.optype == "free":
+                if inst.argval not in self.co_varnames:
+                    self.co_varnames.append(inst.argval)
+                inst.arg = self.co_varnames.index(inst.argval)
+            # add jump
+            elif inst.is_jump:
+                jumps.append(inst)
+
+        self._edited = True
+        self.regenerate()  # recalculate offsets
+
+        # fix jump target argval and argrepr
+        for jump in jumps:
+            jump.argval = jump.target.offset
+            jump.argrepr = f"to {jump.argval}"
+
+        jump_targets = [inst.argval for inst in self.instructions if inst.is_jump]
+        for inst in self.instructions:
+            inst.is_jump_target = inst.offset in jump_targets
+
+        # fix exception table offsets
+        self.exception_table = {start.offset: (end.offset, target.offset) for start, (end, target) in temp_exception_table.items()}
+        if temp_named_exception_table:
+            # also delete entries that will never trigger (end is non-inclusive)
+            self.named_exception_table = [_ExceptionTableEntry(start.offset, end.offset, target.offset, depth, lasti) for (start, end, target, depth, lasti) in temp_named_exception_table if start.offset < end.offset]
+        self._add_inst_exception_attrs()
+
+        self._edited = True
+
+        return len(to_insert)
 
     def new_instruction(self, *args, **kwargs):
         """Creates a new instruction for use with this EditableBytecode object. This function does NOT automatically insert the instruction."""
