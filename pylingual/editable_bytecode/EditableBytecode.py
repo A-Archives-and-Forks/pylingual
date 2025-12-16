@@ -162,9 +162,10 @@ class EditableBytecode:
         self.remove_instructions({inst for (idx, inst) in inline_dict.keys()})
 
         # remove the __annotate__ functions from co_consts, but don't impact co_consts offsets
-        inlined_code_objects = {inst.argval for (idx, inst) in inline_dict.keys()}
-        self.co_consts = [const if const not in inlined_code_objects else None for const in self.co_consts]
         # we don't remove these from child_bytecodes because this runs before child_bytecodes are populated
+        for idx, inst in inline_dict.keys():
+            assert self.co_consts[inst.arg] == inst.argval
+            self.co_consts[inst.arg] = None
 
     def get_recursive_length(self):
         """Returns the recursive length of this bytecode and all its descendents"""
