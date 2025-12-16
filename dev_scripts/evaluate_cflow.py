@@ -342,7 +342,13 @@ def compare_and_report(
     default=False,
     help="Force re-evaluation of the comparison commit for all specified Python versions.",
 )
-def main(input_file: Path, python_versions: list[str], compare_to_commit: str, no_cache: bool):
+@click.option(
+    "--no-cleanup",
+    is_flag=True,
+    default=False,
+    help="Do not clean up workspaces after evaluation.",
+)
+def main(input_file: Path, python_versions: list[str], compare_to_commit: str, no_cache: bool, no_cleanup: bool):
     """
     An evaluation framework to compare the performance of the current project
     state against a previous git commit.
@@ -401,11 +407,12 @@ def main(input_file: Path, python_versions: list[str], compare_to_commit: str, n
         )
 
     # --- Final Cleanup ---
-    console.print("\n[bold]Cleaning up workspaces...[/bold]")
-    if commit_venv_dir is not None:
-        shutil.rmtree(COMMIT_WORKSPACE)
-    shutil.rmtree(LOCAL_WORKSPACE)
-    console.print("Done.")
+    if not no_cleanup:
+        console.print("\n[bold]Cleaning up workspaces...[/bold]")
+        if commit_venv_dir is not None:
+            shutil.rmtree(COMMIT_WORKSPACE)
+        shutil.rmtree(LOCAL_WORKSPACE)
+        console.print("Done.")
 
 
 if __name__ == "__main__":
