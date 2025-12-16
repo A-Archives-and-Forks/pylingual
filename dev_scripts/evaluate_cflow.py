@@ -46,14 +46,7 @@ class EvaluationResult:
             json.dump(jsonable_dict, f, indent=2)
 
     def __post_init__(self):
-        assert (
-            len(
-                set.intersection(
-                    self.success, self.failure, self.compile_error, self.error
-                )
-            )
-            == 0
-        ), "Malformed evaluation result. Paths appear in multiple categories."
+        assert len(set.intersection(self.success, self.failure, self.compile_error, self.error)) == 0, "Malformed evaluation result. Paths appear in multiple categories."
 
 
 # --- Constants and Configuration ---
@@ -79,15 +72,8 @@ SUPPORTED_PYTHON_VERSIONS = (
 console = Console()
 
 
-def _get_cache_path(
-    commit_hash: str, eval_file_list_path: Path, python_version: str
-) -> Path:
-    cache_path = (
-        CACHE_DIR
-        / python_version
-        / commit_hash
-        / eval_file_list_path.with_suffix(".json").name
-    )
+def _get_cache_path(commit_hash: str, eval_file_list_path: Path, python_version: str) -> Path:
+    cache_path = CACHE_DIR / python_version / commit_hash / eval_file_list_path.with_suffix(".json").name
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     return cache_path
 
@@ -114,17 +100,13 @@ def run_command(command, cwd=None, capture_output=False, text=True):
     except FileNotFoundError:
         # This error is more common on Windows if git isn't in the PATH
         cmd_name = command[0] if isinstance(command, list) else command.split()[0]
-        console.print(
-            f"[bold red]Error: Command not found.[/bold red] Is '{cmd_name}' in your system's PATH?"
-        )
+        console.print(f"[bold red]Error: Command not found.[/bold red] Is '{cmd_name}' in your system's PATH?")
         sys.exit(1)
 
 
 def get_head_commit_hash():
     """Gets the short hash of the current HEAD commit."""
-    return run_command(
-        ["git", "rev-parse", "--short", "HEAD"], capture_output=True
-    ).stdout.strip()
+    return run_command(["git", "rev-parse", "--short", "HEAD"], capture_output=True).stdout.strip()
 
 
 def setup_workspace(workspace_path: Path, version_name: str, commit_hash: str = ""):
@@ -139,11 +121,6 @@ def setup_workspace(workspace_path: Path, version_name: str, commit_hash: str = 
     code_dir = workspace_path / "code"
     venv_dir = workspace_path / "venv"
     # Handle OS-specific executable paths
-    pip_executable = (
-        venv_dir / "Scripts" / "pip.exe"
-        if sys.platform == "win32"
-        else venv_dir / "bin" / "pip"
-    )
 
     # 1. Get the source code
     if version_name == "local":
@@ -152,9 +129,7 @@ def setup_workspace(workspace_path: Path, version_name: str, commit_hash: str = 
         shutil.copytree(
             PROJECT_ROOT,
             code_dir,
-            ignore=shutil.ignore_patterns(
-                ".git", ".eval_harness", "__pycache__", "*.pyc", ".idea"
-            ),
+            ignore=shutil.ignore_patterns(".git", ".eval_harness", "__pycache__", "*.pyc", ".idea", ".venv"),
         )
     else:
         console.print(f"  -> Exporting code from {version_name} ({commit_hash})...")
@@ -163,34 +138,39 @@ def setup_workspace(workspace_path: Path, version_name: str, commit_hash: str = 
         git_archive_command = f"git archive {commit_hash} | tar -x -C {code_dir}"
         run_command(git_archive_command, cwd=PROJECT_ROOT)
 
-    # 2. Create virtual environment
-    console.print(
-        f"  -> Creating virtual environment at [italic]{venv_dir}[/italic]..."
-    )
-    run_command([sys.executable, "-m", "venv", str(venv_dir)])
+    # 2. Setup environment using uv
+    console.print("  -> Setting up environment with uv...")
 
-    # 3. Install dependencies
-    console.print("  -> Installing project dependencies...")
-    run_command(
-        [str(pip_executable), "install", "-e", "."], cwd=code_dir, capture_output=True
-    )
+    # Check if we should use 'uv sync' (new style) or 'uv pip' (legacy)
+    has_uv_lock = (code_dir / "uv.lock").exists()
+    has_pyproject = (code_dir / "pyproject.toml").exists()
+
+    if has_uv_lock and has_pyproject:
+        console.print("  -> Found uv.lock, using [bold]uv sync[/bold]...")
+        # uv sync creates the venv in .venv by default
+        run_command(["uv", "sync"], cwd=code_dir)
+        venv_dir = code_dir / ".venv"
+    else:
+        console.print("  -> Legacy setup, using [bold]uv pip install[/bold]...")
+        # Create venv explicitly
+        run_command(["uv", "venv", str(venv_dir)], cwd=code_dir)
+
+        # Determine python executable in the new venv for pip install
+        venv_python = venv_dir / "Scripts" / "python.exe" if sys.platform == "win32" else venv_dir / "bin" / "python"
+
+        # Install dependencies
+        run_command(["uv", "pip", "install", "-e", ".", "--python", str(venv_python)], cwd=code_dir)
 
     return code_dir, venv_dir
 
 
-def run_evaluation(
-    workspace_path: Path, venv_dir: Path, input_file: Path, python_version: str
-) -> EvaluationResult:
+def run_evaluation(workspace_path: Path, venv_dir: Path, input_file: Path, python_version: str) -> EvaluationResult:
     """Runs the cflow.py evaluation script within a given workspace."""
     version_name = workspace_path.name
-    console.print(
-        f"\n[bold green]Running evaluation for '{version_name}' on Python {python_version}...[/bold green]"
-    )
+    console.print(f"\n[bold green]Running evaluation for '{version_name}' on Python {python_version}...[/bold green]")
 
     code_dir = workspace_path / "code"
-    output_dir = (
-        workspace_path / "output" / python_version
-    )  # Use a sub-dir for version-specific output
+    output_dir = workspace_path / "output" / python_version  # Use a sub-dir for version-specific output
     output_dir.mkdir(parents=True, exist_ok=True)
     results_file = output_dir / python_version / f"{input_file.stem}_0" / "results.json"
 
@@ -199,11 +179,7 @@ def run_evaluation(
         results_file.unlink()
 
     cflow_script = code_dir / "dev_scripts" / "cflow.py"
-    python_executable = (
-        venv_dir / "Scripts" / "python.exe"
-        if sys.platform == "win32"
-        else venv_dir / "bin" / "python"
-    )
+    python_executable = venv_dir / "Scripts" / "python.exe" if sys.platform == "win32" else venv_dir / "bin" / "python"
 
     command = [
         str(python_executable),
@@ -218,9 +194,7 @@ def run_evaluation(
     run_command(command)
 
     if not results_file.exists():
-        console.print(
-            f"[bold red]Error:[/bold red] Evaluation for '{version_name}' finished but 'results.json' was not created."
-        )
+        console.print(f"[bold red]Error:[/bold red] Evaluation for '{version_name}' finished but 'results.json' was not created.")
         sys.exit(1)
 
     return EvaluationResult.import_json(results_file)
@@ -247,9 +221,7 @@ def compare_and_report(
 
         # 1. Movement Matrix
         table = Table(title="Evaluation Movement Matrix")
-        table.add_column(
-            f"From ({compare_to_commit})", justify="right", style="cyan", no_wrap=True
-        )
+        table.add_column(f"From ({compare_to_commit})", justify="right", style="cyan", no_wrap=True)
         for category in categories:
             table.add_column(
                 f"To (Local)\n{category.replace('_', ' ').title()}",
@@ -283,9 +255,7 @@ def compare_and_report(
                     style = "bold green"  # Improvement to success
                 else:
                     style = "tan"  # Side-move
-                row.append(
-                    f"[{style}]{'+' if from_cat != to_cat else ''}{count}[/{style}]"
-                )
+                row.append(f"[{style}]{'+' if from_cat != to_cat else ''}{count}[/{style}]")
             table.add_row(*row)
 
         console.print(table)
@@ -297,13 +267,7 @@ def compare_and_report(
                 if from_cat == to_cat:
                     continue
 
-                moved_paths = sorted(
-                    [
-                        p
-                        for p in all_paths
-                        if commit_map.get(p) == from_cat and local_map.get(p) == to_cat
-                    ]
-                )
+                moved_paths = sorted([p for p in all_paths if commit_map.get(p) == from_cat and local_map.get(p) == to_cat])
 
                 if not moved_paths:
                     continue
@@ -378,9 +342,7 @@ def compare_and_report(
     default=False,
     help="Force re-evaluation of the comparison commit for all specified Python versions.",
 )
-def main(
-    input_file: Path, python_versions: list[str], compare_to_commit: str, no_cache: bool
-):
+def main(input_file: Path, python_versions: list[str], compare_to_commit: str, no_cache: bool):
     """
     An evaluation framework to compare the performance of the current project
     state against a previous git commit.
@@ -391,13 +353,9 @@ def main(
     commit_version = compare_to_commit
     if compare_to_commit.lower() == "head":
         compare_to_commit = get_head_commit_hash()
-        console.print(
-            f"[bold green]Resolved HEAD to commit {compare_to_commit}.[/bold green]"
-        )
+        console.print(f"[bold green]Resolved HEAD to commit {compare_to_commit}.[/bold green]")
     else:
-        compare_to_commit = compare_to_commit[
-            :7
-        ].lower()  # shorten and lowercase for consistency
+        compare_to_commit = compare_to_commit[:7].lower()  # shorten and lowercase for consistency
 
     COMMIT_WORKSPACE = HARNESS_DIR / compare_to_commit
 
@@ -407,51 +365,33 @@ def main(
     commit_venv_dir = None
 
     for python_version in python_versions:
-        console.print(
-            f"\n[bold rule dark_orange]Processing Python Version: {python_version}[/bold rule dark_orange]"
-        )
+        console.print(f"\n[bold rule dark_orange]Processing Python Version: {python_version}[/bold rule dark_orange]")
 
         # --- Commit Evaluation ---
-        cached_result_file = _get_cache_path(
-            compare_to_commit, input_file, python_version
-        )
+        cached_result_file = _get_cache_path(compare_to_commit, input_file, python_version)
 
         if not no_cache and cached_result_file.exists():
-            console.print(
-                f"[bold green]Using cached result for ({compare_to_commit}) on Python {python_version}...[/bold green]"
-            )
+            console.print(f"[bold green]Using cached result for ({compare_to_commit}) on Python {python_version}...[/bold green]")
             commit_results = EvaluationResult.import_json(cached_result_file)
         else:
             if commit_venv_dir is None:
-                _, commit_venv_dir = setup_workspace(
-                    COMMIT_WORKSPACE, commit_version, compare_to_commit
-                )
+                _, commit_venv_dir = setup_workspace(COMMIT_WORKSPACE, commit_version, compare_to_commit)
 
             assert commit_venv_dir is not None
-            commit_results = run_evaluation(
-                COMMIT_WORKSPACE, commit_venv_dir, input_file, python_version
-            )
+            commit_results = run_evaluation(COMMIT_WORKSPACE, commit_venv_dir, input_file, python_version)
             commit_results.export_json(cached_result_file)
             console.print(f"-> Caching result to [italic]{cached_result_file}[/italic]")
 
         # --- Local Evaluation ---
-        local_results = run_evaluation(
-            LOCAL_WORKSPACE, local_venv_dir, input_file, python_version
-        )
+        local_results = run_evaluation(LOCAL_WORKSPACE, local_venv_dir, input_file, python_version)
 
         # --- Save Local Results Artifact ---
-        local_artifact_path = (
-            CACHE_DIR / python_version / f"local_results_{run_timestamp}.json"
-        )
+        local_artifact_path = CACHE_DIR / python_version / f"local_results_{run_timestamp}.json"
         local_results.export_json(local_artifact_path)
-        console.print(
-            f"-> Local results saved to [italic]{local_artifact_path}[/italic]"
-        )
+        console.print(f"-> Local results saved to [italic]{local_artifact_path}[/italic]")
 
         # --- Comparison ---
-        report_artifact_path = (
-            CACHE_DIR / python_version / f"comparison_report_{run_timestamp}.txt"
-        )
+        report_artifact_path = CACHE_DIR / python_version / f"comparison_report_{run_timestamp}.txt"
         compare_and_report(
             commit_results,
             local_results,
