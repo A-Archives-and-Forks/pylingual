@@ -663,6 +663,9 @@ class EditableBytecode:
 
         to_insert = [inst for insts in insert_dict.values() for inst in insts]
         for inst in to_insert:
+            # set bytecode backpointer
+            inst.bytecode = self
+
             # add names and consts
             if inst.optype == "const":
                 if inst.argval not in self.co_consts:
