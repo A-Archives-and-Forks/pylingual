@@ -89,7 +89,7 @@ class JumpTemplate(ControlFlowTemplate):
 
     try_match = make_try_match(
         {
-            EdgeKind.Fall: "tail",
+            EdgeKind.Jump: "tail",
             EdgeKind.TrueJump: "block",
         },
         "body",
