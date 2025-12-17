@@ -1,5 +1,5 @@
 from ..cft import ControlFlowTemplate, EdgeKind, MetaTemplate, register_template
-from ..utils import E, T, N, defer_source_to, ending_instructions, exact_instructions, no_back_edges, to_indented_source, make_try_match
+from ..utils import E, T, N, defer_source_to, ending_instructions, exact_instructions, no_back_edges, starting_instructions, to_indented_source, make_try_match
 
 
 @register_template(0, 0)
@@ -51,4 +51,20 @@ class Generator3_12(ControlFlowTemplate):
         """
         {entry}
         {body}
+        """
+
+@register_template(0, 0, (3, 14))
+class Generator3_14(ControlFlowTemplate):
+    template = T(
+        entry=N(E.exc("gen_cleanup")).with_cond(starting_instructions("RETURN_GENERATOR", "POP_TOP")),
+        gen_cleanup=N(E.meta("end")).with_cond(exact_instructions("CALL_INTRINSIC_1", "RERAISE")),
+        end=N().of_type(MetaTemplate),
+    )
+
+    try_match = make_try_match({EdgeKind.Fall: "end"}, "entry","gen_cleanup")
+
+    @to_indented_source
+    def to_indented_source():
+        """
+        {entry}
         """
