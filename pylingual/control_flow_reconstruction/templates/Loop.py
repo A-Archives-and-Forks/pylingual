@@ -522,7 +522,7 @@ class FixLoop(ControlFlowTemplate):
                     # Only remove edge if there are more than 2 incoming edges to avoid breaking other control flow structures
                     if cfg.in_degree(succ) > 2:
                         cfg.remove_edge(break_node, succ)
-                    elif cfg.in_degree(succ) <= 2:
+                    elif cfg.in_degree(succ) <= 2 and succ != cfg.end:
                         # Broken: conflicting cases where removing the edge would strand blocks
                         # but also match correctly to valid Break statement nodes
                         continue
