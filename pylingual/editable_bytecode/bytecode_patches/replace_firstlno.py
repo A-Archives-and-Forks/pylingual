@@ -13,3 +13,5 @@ def replace_firstlno(bytecode: EditableBytecode):
 
         if bytecode.version >= (3, 14):
             to_replace.opname = "LOAD_SMALL_INT"
+            to_replace.opcode = bytecode.opcode.LOAD_SMALL_INT
+            to_replace.optype = "??"
