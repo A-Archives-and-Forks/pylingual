@@ -157,6 +157,11 @@ class EditableBytecode:
                 inline_dict[(idx, inst)] = inlinable_insts
                 jump_target_mapping[inst] = inlinable_insts[0]
 
+                # for jumps in __conditional_annotations__ that go to the omitted return, set them to jump to the next instruction
+                for new_inst in inlinable_insts:
+                    if new_inst.is_jump and new_inst.target not in inlinable_insts:
+                        jump_target_mapping[new_inst.target] = self.instructions[idx + 1]
+
         self.insert_insts({idx + 1: insts for (idx, inst), insts in inline_dict.items()})
         self._change_jump_targets(jump_target_mapping)
         self.remove_instructions({inst for (idx, inst) in inline_dict.keys()})
