@@ -88,8 +88,12 @@ class EditableBytecode:
         if self.version >= (3, 13):
             self.fix_make_function_argval()
 
-        low_information_instruction_blacklist = ["RESUME", "EXTENDED_ARG", "CACHE", "PRECALL", "MAKE_CELL"]
+        low_information_instruction_blacklist = ["RESUME", "EXTENDED_ARG", "CACHE", "PRECALL", "MAKE_CELL", "NOT_TAKEN", "COPY_FREE_VARS"]
         self.remove_instructions({inst for inst in self.instructions if inst.opname in low_information_instruction_blacklist})
+
+        # inline __annotate__ functions, which were added in python 3.14
+        if self.version >= (3, 14):
+            self.inline_annotate_functions()
 
         # updates attribute of instructions that contains information about the exception table
         self._add_inst_exception_attrs()
@@ -114,6 +118,187 @@ class EditableBytecode:
                     inst.argval = next_inst.argval
                 else:
                     inst.argval = 0
+
+    def inline_annotate_functions(self):
+        """In Python 3.14, type annotations are stored in implicit __annotate__ functions. This function inlines them."""
+        #  (opname, argval) pairs
+        # fmt: off
+        # appears at the start of all __annotate__ functions
+        ANNOTATE_FUNC_PREAMBLE = (
+            ("LOAD_FAST_BORROW", "format"),
+            ("LOAD_SMALL_INT", 2),
+            ("COMPARE_OP", ">"),
+            ("POP_JUMP_IF_FALSE", 12),
+            ("LOAD_COMMON_CONSTANT", 1), # NotImplementedError
+            ("RAISE_VARARGS", 1), # exception instance
+        )
+
+        # appears at the start of a <module> code object that has annotations
+        MODULE_ANNOTATE_FUNC_LOAD_SEQUENCE = (
+            ("LOAD_CONST", "__annotate__"), # code object
+            ("MAKE_FUNCTION", 0),
+            ("STORE_NAME", "__annotate__"),
+            ("BUILD_SET", 0),
+            ("STORE_NAME", "__conditional_annotations__"),
+        )
+
+        # appears at the end of class object that has annotations, right before storing the static attributes
+        CLASS_ANNOTATE_FUNC_LOAD_SEQUENCE = (
+            ("LOAD_FAST_BORROW", "__classdict__"),
+            ("LOAD_FAST_BORROW", "__conditional_annotations__"),
+            ("BUILD_TUPLE", 2),
+            ("LOAD_CONST", "__annotate__"), # code object
+            ("MAKE_FUNCTION", 8),
+            ("SET_FUNCTION_ATTRIBUTE", 8), # closure
+            ("STORE_NAME", "__annotate_func__"),
+        )
+        # fmt: on
+
+        def try_read_annotate_func(codeobj) -> EditableBytecode | None:
+            if not iscode(codeobj):
+                return None
+            if not codeobj.co_name == "__annotate__":
+                return None
+            target_bc = EditableBytecode(codeobj, self.opcode, self.version)
+            target_preamble = tuple((inst.opname, inst.argval) for inst in target_bc.instructions[: len(ANNOTATE_FUNC_PREAMBLE)])
+            if target_preamble != ANNOTATE_FUNC_PREAMBLE:
+                return None
+            return target_bc
+
+        # this applies to __annotate__ functions at the top of the <module> codeobj
+        def is_annotate_func_and_get_conditional_annotation_map(codeobj) -> tuple[bool, dict[int, list[Inst]]]:
+            annotate_bytecode = try_read_annotate_func(codeobj)
+            if annotate_bytecode is None:
+                return (False, dict())
+
+            # searching for
+            # LOAD_SMALL_INT <identifier> (could be load const)
+            # LOAD_GLOBAL __conditional_annotations__
+            # CONTAINS_OP in
+            # POP_JUMP_IF_FALSE (to next conditional annotation)
+            # ... type expression
+            # COPY 2
+            # LOAD_CONST (variable name)
+            # STORE_SUBSCR
+
+            conditional_annotation_map: dict[int, list[Inst]] = dict()
+
+            cursor_idx = annotate_bytecode.instructions.index(annotate_bytecode[3].target.next_instructions[0])  # start of the first annotation definition
+            while (cursor_inst := annotate_bytecode[cursor_idx]).opname != "RETURN_VALUE":
+                if cursor_inst.opname.startswith("LOAD_") and cursor_inst.argval == "__classdict__":
+                    annotation_identifier = -1
+                    next_cursor_idx = next(idx + 1 for idx in range(cursor_idx, len(annotate_bytecode)) if annotate_bytecode[idx].opname == "STORE_SUBSCR")
+                    inlinable_insts = (conditional_annotation_map.get(-1) or list()) + annotate_bytecode[cursor_idx + 1 : next_cursor_idx]
+                elif cursor_inst.opname.startswith("LOAD_") and isinstance(cursor_inst.argval, int):
+                    annotation_identifier = cursor_inst.argval
+
+                    conditional_annotation_guard_jump = annotate_bytecode[cursor_idx + 3]
+                    next_cursor_idx = annotate_bytecode.instructions.index(conditional_annotation_guard_jump.target)
+
+                    inlinable_insts = annotate_bytecode[cursor_idx + 4 : next_cursor_idx]
+                else:
+                    raise AssertionError("Misaligned 3.14 annotation inlining")
+
+                # to help translation, we replace COPY 2 with LOAD_GLOBAL (__annotations__)
+                copy_annotations_inst = inlinable_insts[-3]
+                assert copy_annotations_inst.opname == "COPY" and copy_annotations_inst.argval == 2, "Misaligned 3.14 annotation inlining"
+                load_global_annotations = self.new_instruction(
+                    opname="LOAD_GLOBAL",
+                    opcode=self.opcode.LOAD_GLOBAL,
+                    optype="name",
+                    inst_size=copy_annotations_inst.inst_size,
+                    arg=-1,
+                    argval="__annotations__",
+                    argrepr="__annotations__",
+                    has_arg=True,
+                    offset=copy_annotations_inst.offset,
+                    starts_line=None,
+                    is_jump_target=False,
+                    has_extended_arg=False,
+                )
+                inlinable_insts[-3] = load_global_annotations
+
+                conditional_annotation_map[annotation_identifier] = inlinable_insts
+                cursor_idx = next_cursor_idx
+
+            return (True, conditional_annotation_map)
+
+        # this applies to __annotate__ functions that are decorating a child function
+        def is_annotate_func_and_get_inlinable_insts(codeobj) -> tuple[bool, list[Inst]]:
+            annotate_bytecode = try_read_annotate_func(codeobj)
+            if annotate_bytecode is None:
+                return (False, [])
+            return (True, annotate_bytecode.instructions[len(ANNOTATE_FUNC_PREAMBLE) : -1])  # skip the RETURN_VALUE at the end
+
+        # iterate over all instructions
+        # replace any load_consts that load __annotate__ functions with the function's instructions, minus the return and the prefix
+        # keys are (index, instructions to remove), values are (list of instructions to insert)
+        inline_dict: dict[tuple[int, tuple[Inst]], list[Inst]] = {}
+        jump_target_mapping = {}
+        conditional_annotation_map = {}
+
+        # eat the <module> level conditional __annotate__ object
+        my_module_preamble = tuple((inst.opname, getattr(inst.argval, "co_name", inst.argval)) for inst in self.instructions[: len(MODULE_ANNOTATE_FUNC_LOAD_SEQUENCE)])
+        if my_module_preamble == MODULE_ANNOTATE_FUNC_LOAD_SEQUENCE:
+            sanity_check, conditional_annotation_map = is_annotate_func_and_get_conditional_annotation_map(self.instructions[0].argval)
+            assert sanity_check, "Improperly matched annotation function load sequence"
+            self.co_consts[self.instructions[0].arg] = None
+            self.remove_instructions(self.instructions[: len(MODULE_ANNOTATE_FUNC_LOAD_SEQUENCE)])
+
+        # handle class object __annotate_func__
+        store_static_attributes = next((inst for inst in self.instructions if inst.opname == "STORE_NAME" and inst.argval == "__static_attributes__"), None)
+        if store_static_attributes:
+            preamble_end_idx = self.instructions.index(store_static_attributes) - 1
+            my_class_preamble = tuple((inst.opname, getattr(inst.argval, "co_name", inst.argval)) for inst in self.instructions[preamble_end_idx - len(CLASS_ANNOTATE_FUNC_LOAD_SEQUENCE) : preamble_end_idx])
+            if my_class_preamble == CLASS_ANNOTATE_FUNC_LOAD_SEQUENCE:
+                sanity_check, class_conditional_annotation_map = is_annotate_func_and_get_conditional_annotation_map(self.instructions[preamble_end_idx - 4].argval)
+                assert sanity_check, "Improperly matched annotation function load sequence"
+                conditional_annotation_map |= class_conditional_annotation_map
+                self.co_consts[self.instructions[preamble_end_idx - 4].arg] = None
+                self.remove_instructions(self.instructions[preamble_end_idx - len(CLASS_ANNOTATE_FUNC_LOAD_SEQUENCE) : preamble_end_idx])
+
+        for idx, inst in enumerate(self.instructions):
+            # handle function definition annotations
+            if inst.opname == "LOAD_CONST":
+                is_annotate_func, inlinable_insts = is_annotate_func_and_get_inlinable_insts(inst.argval)
+                if not is_annotate_func:
+                    continue
+
+                # replace
+                # LOAD_CONST __annotate__
+                # MAKE_FUNCTION
+                inline_dict[(idx, tuple(self.instructions[idx : idx + 2]))] = inlinable_insts
+                jump_target_mapping[inst] = inlinable_insts[0]
+
+            # handle inline variable annotations
+            elif inst.opname in ("LOAD_NAME", "LOAD_DEREF") and inst.argval == "__conditional_annotations__":
+                load_annotation_identifier = self.instructions[idx + 1]
+                if not (load_annotation_identifier.opname in ("LOAD_CONST", "LOAD_SMALL_INT") and load_annotation_identifier.argval in conditional_annotation_map):
+                    continue
+                inlinable_insts = conditional_annotation_map[load_annotation_identifier.argval]
+                # replace
+                # LOAD_NAME __conditional_annotations__
+                # LOAD_SMALL_INT <identifier> (could be load const)
+                # SET_ADD 1
+                # POP_TOP
+                inline_dict[(idx, tuple(self.instructions[idx : idx + 4]))] = inlinable_insts
+                jump_target_mapping[inst] = inlinable_insts[0]
+
+            # handle __classdict__ annotations
+            elif inst.opname == "STORE_DEREF" and inst.argval == "__conditional_annotations__" and -1 in conditional_annotation_map:
+                inline_dict[(idx, tuple(self.instructions[idx - 1 : idx + 1]))] = conditional_annotation_map[-1]
+                del conditional_annotation_map[-1]
+
+        self.insert_insts({idx + len(insts_to_remove): insts_to_insert for (idx, insts_to_remove), insts_to_insert in inline_dict.items()})
+        self._change_jump_targets(jump_target_mapping)
+        self.remove_instructions(set(itertools.chain.from_iterable(insts_to_remove for (idx, insts_to_remove) in inline_dict.keys())))
+
+        # remove the __annotate__ functions from co_consts, but don't impact co_consts offsets
+        # we don't remove these from child_bytecodes because this runs before child_bytecodes are populated
+        for idx, removed_insts in inline_dict.keys():
+            if (inst := removed_insts[0]).opname == "LOAD_CONST":
+                assert self.co_consts[inst.arg] == inst.argval
+                self.co_consts[inst.arg] = None
 
     def get_recursive_length(self):
         """Returns the recursive length of this bytecode and all its descendents"""
@@ -404,16 +589,16 @@ class EditableBytecode:
             for bc in self.iter_bytecodes():
                 patch(bc)
 
-    def _change_jump_targets(self, from_inst: Inst, to_inst: Inst):
-        """Changes the targets of any instructions jumping to "from_inst" to "to_inst".
+    def _change_jump_targets(self, jump_target_mapping: dict[Inst, Inst]):
+        """Changes the targets of any instructions jumping to any of the keys in jump_target_mapping to the corresponding values.
         Before:
             InstA --> InstB
-        After _change_jump_targets(InstB, InstC):
+        After _change_jump_targets({InstB: InstC}):
             InstA --> !!InstC!!
         """
         for i, inst in enumerate(self):
-            if inst.is_jump and inst.target == from_inst:
-                self[i]._target = to_inst
+            if inst.is_jump and inst.target in jump_target_mapping:
+                self[i]._target = jump_target_mapping[inst.target]
 
     def collapse_unconditional_jumps(self):
         """Causes unnecessary unconditional jumps to "collapse" into a single jump."""
@@ -582,6 +767,75 @@ class EditableBytecode:
         self._edited = True
 
         return len(to_remove)
+
+    def insert_insts(self, insert_dict: dict[int, list[Inst]]) -> int:
+        """Inserts the specified lists of instructions at each specified index."""
+
+        if not any(insert_dict.values()):
+            return 0
+
+        if any(idx < 0 or idx > len(self.instructions) for idx in insert_dict.keys()):
+            raise IndexError("Index out of range")
+
+        self.regenerate()
+        self._edited = True
+
+        # store an instruction-based copy of the exception table to make offset fixing easier at the end
+        temp_exception_table = {self.get_by_offset(start): (self.get_by_offset(end), self.get_by_offset(target)) for start, (end, target) in self.exception_table.items()}
+        temp_named_exception_table = dict()
+        if self.named_exception_table:
+            temp_named_exception_table = [(self.get_by_offset(e.start), self.get_by_offset(e.end), self.get_by_offset(e.target), e.depth, e.lasti) for e in self.named_exception_table]
+
+        # insert instructions
+        # go from small to large indices, and track how the indices change as we insert
+        inserted_count = 0
+        for idx, insts in sorted(insert_dict.items(), key=lambda x: x[0]):
+            real_idx = idx + inserted_count
+            self.instructions = self.instructions[:real_idx] + insts + self.instructions[real_idx:]
+            inserted_count += len(insts)
+
+        to_insert = [inst for insts in insert_dict.values() for inst in insts]
+        for inst in to_insert:
+            # set bytecode backpointer
+            inst.bytecode = self
+
+            # add names and consts
+            if inst.optype == "const":
+                if inst.argval not in self.co_consts:
+                    self.co_consts.append(inst.argval)
+                inst.arg = self.co_consts.index(inst.argval)
+            elif inst.optype == "name":
+                if inst.argval not in self.co_names:
+                    self.co_names.append(inst.argval)
+                inst.arg = self.co_names.index(inst.argval)
+            elif inst.optype == "free":
+                if inst.argval not in self.co_varnames:
+                    self.co_varnames.append(inst.argval)
+                inst.arg = self.co_varnames.index(inst.argval)
+
+        self._edited = True
+        self.regenerate()  # recalculate offsets
+
+        # fix jump target argval and argrepr
+        for inst in self.instructions:
+            inst.is_jump_target = False
+        for inst in self.instructions:
+            if not inst.is_jump:
+                continue
+            inst.argval = inst.target.offset
+            inst.argrepr = f"to {inst.argval}"
+            inst.target.is_jump_target = True
+
+        # fix exception table offsets
+        self.exception_table = {start.offset: (end.offset, target.offset) for start, (end, target) in temp_exception_table.items()}
+        if temp_named_exception_table:
+            # also delete entries that will never trigger (end is non-inclusive)
+            self.named_exception_table = [_ExceptionTableEntry(start.offset, end.offset, target.offset, depth, lasti) for (start, end, target, depth, lasti) in temp_named_exception_table if start.offset < end.offset]
+        self._add_inst_exception_attrs()
+
+        self._edited = True
+
+        return len(to_insert)
 
     def new_instruction(self, *args, **kwargs):
         """Creates a new instruction for use with this EditableBytecode object. This function does NOT automatically insert the instruction."""
@@ -830,9 +1084,10 @@ class EditableBytecode:
         instruction_before = self[i.start - 1] if i.start is not None and i.start > 0 else None
         instruction_after = self[i.stop] if i.stop is not None and i.stop <= len(self) else None
 
+        jump_target_mapping = {}
         for j, inst in enumerate(insts):
             if isinstance(value, (list, tuple)) and len(insts) == len(value):
-                self._change_jump_targets(inst, value[j])
+                jump_target_mapping[inst] = value[j]
             else:
                 new_target = instruction_before or instruction_after
                 if not new_target and len(value) > 0:
@@ -841,8 +1096,9 @@ class EditableBytecode:
                     pass  # They should have used __del__
 
                 if new_target:
-                    self._change_jump_targets(inst, new_target)
+                    jump_target_mapping[inst] = new_target
 
+        self._change_jump_targets(jump_target_mapping)
         self.instructions[i] = value
         self._edited = True
 
@@ -856,11 +1112,12 @@ class EditableBytecode:
         instruction_before = self[i.start - 1] if i.start is not None and i.start > 0 else None
         instruction_after = self[i.stop] if i.stop is not None and i.stop <= len(self) else None
 
+        jump_target_mapping = {}
         for inst in insts:
             new_target = instruction_before or instruction_after
-
             if new_target:
-                self._change_jump_targets(inst, new_target)
+                jump_target_mapping[inst] = new_target
+        self._change_jump_targets(jump_target_mapping)
 
         del self.instructions[i]
         self._edited = True

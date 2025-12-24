@@ -4,7 +4,7 @@
 #   "pylingual",
 # ]
 # [tool.uv.sources]
-# pylingual = { path = "../../" }
+# pylingual = { path = "../../", editable = true }
 # ///
 
 import csv

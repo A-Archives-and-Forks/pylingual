@@ -15,7 +15,7 @@ class PYCFile(EditableBytecode):
     def __init__(self, source, name_prefix=None):
         self.pyc_path = None
         self.source = source
-        source_tuple = (None, None, None, None, None, None, None)
+        source_tuple = (None, None, None, None, None, None, None, None)
         if isinstance(source, bytes):
             source = BytesIO(source)
             source_tuple = load_module_from_file_object(source)
@@ -33,6 +33,7 @@ class PYCFile(EditableBytecode):
             self.ispypy,
             self.source_size,
             self.sip_hash,
+            self.file_offsets,
         ) = source_tuple
 
         self.version = PythonVersion(version)
