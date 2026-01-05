@@ -52,15 +52,15 @@ class CacheTranslator:
         # Check for inputs that exceed the model's maximum input length
         # T5 models typically have a max input length of 512 tokens
         # Try multiple possible attribute names for max length across different model types
-        model_max_length = getattr(
-            self.translator.model.config,
-            'n_positions',
-            getattr(
-                self.translator.model.config,
-                'max_position_embeddings',
-                getattr(self.translator.tokenizer, 'model_max_length', 512)
-            )
-        )
+        model_max_length = 512  # Default fallback
+        for attr in ['n_positions', 'max_position_embeddings']:
+            if hasattr(self.translator.model.config, attr):
+                model_max_length = getattr(self.translator.model.config, attr)
+                break
+        else:
+            # If config doesn't have the attributes, try tokenizer
+            if hasattr(self.translator.tokenizer, 'model_max_length'):
+                model_max_length = self.translator.tokenizer.model_max_length
         
         for i, request in enumerate(translation_requests):
             tokenized = self.translator.tokenizer(request, return_tensors="pt", truncation=False)
