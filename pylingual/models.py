@@ -25,6 +25,11 @@ else:
 logger = logging.getLogger(__name__)
 
 
+class TokenLimitExceededError(Exception):
+    """Raised when input exceeds the model's maximum token length."""
+    pass
+
+
 # translator with caching
 class CacheTranslator:
     """
@@ -46,14 +51,23 @@ class CacheTranslator:
     def _translate_and_decode(self, translation_requests: TrackedDataset | list[str], batch_size: int = 32, **kwargs) -> list[str]:
         # Check for inputs that exceed the model's maximum input length
         # T5 models typically have a max input length of 512 tokens
-        model_max_length = getattr(self.translator.model.config, 'n_positions', 512)
+        # Try multiple possible attribute names for max length across different model types
+        model_max_length = getattr(
+            self.translator.model.config,
+            'n_positions',
+            getattr(
+                self.translator.model.config,
+                'max_position_embeddings',
+                getattr(self.translator.tokenizer, 'model_max_length', 512)
+            )
+        )
         
         for i, request in enumerate(translation_requests):
             tokenized = self.translator.tokenizer(request, return_tensors="pt", truncation=False)
             input_length = tokenized['input_ids'].shape[1]
             
             if input_length > model_max_length:
-                raise ValueError(f"Input {i} exceeds model maximum length ({input_length} > {model_max_length} tokens). This bytecode statement is too long to decompile.")
+                raise TokenLimitExceededError(f"Input {i} exceeds model maximum length ({input_length} > {model_max_length} tokens). This bytecode statement is too long to decompile.")
         
         # return_tensors=True prevents standard postprocessing which skips special tokens
         translation_result = self.translator(translation_requests, return_tensors=True, batch_size=batch_size, **kwargs)
@@ -81,13 +95,12 @@ class CacheTranslator:
         for request in translation_requests:
             try:
                 translation_results.append(self._translate_and_decode([request], batch_size=1)[0])
-            except Exception as e:
-                # last resort fallback
-                # Check if it's a token limit error
-                if "exceeds model maximum length" in str(e):
-                    translation_results.append("'''Decompiler error: statement exceeds model token limit. This bytecode is too long to decompile automatically.'''")
-                else:
-                    translation_results.append("'''Decompiler error: line too long for translation. Please decompile this statement manually.'''")
+            except TokenLimitExceededError:
+                # Token limit error - provide specific message
+                translation_results.append("'''Decompiler error: statement exceeds model token limit. This bytecode is too long to decompile automatically.'''")
+            except Exception:
+                # Other translation errors
+                translation_results.append("'''Decompiler error: line too long for translation. Please decompile this statement manually.'''")
         return translation_results
 
     def __call__(self, args: list, **_):
