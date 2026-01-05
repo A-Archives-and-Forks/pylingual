@@ -12,6 +12,7 @@ from ..utils import (
     is_not_type,
     no_back_edges,
     versions_below,
+    versions_except,
     versions_from,
     ending_instructions,
     has_no_lines,
@@ -29,10 +30,27 @@ if TYPE_CHECKING:
 
 
 
-@register_template(0, 1)
+@register_template(0, 1, *versions_below(3, 14))
 class ForLoop(ControlFlowTemplate):
     template = T(
         for_iter=~N("for_body", "tail"),
+        for_body=~N("for_iter").with_in_deg(1),
+        tail=N.tail().with_cond(is_not_type(LoopElse)),
+    )
+
+    try_match = make_try_match({EdgeKind.Fall: "tail"}, "for_iter", "for_body")
+
+    @to_indented_source
+    def to_indented_source():
+        """
+        {for_iter}
+            {for_body}
+        """
+
+@register_template(0, 1, *versions_from(3, 14))
+class ForLoop3_14(ControlFlowTemplate):
+    template = T(
+        for_iter=~N("for_body", "tail").with_cond(with_top_level_instructions("FOR_ITER")),
         for_body=~N("for_iter").with_in_deg(1),
         tail=N.tail().with_cond(is_not_type(LoopElse)),
     )
@@ -85,7 +103,7 @@ class LoopedReturn(ControlFlowTemplate):
             {for_body}
         """
 
-@register_template(0, 2, *versions_below(3, 10))
+@register_template(0, 2, *versions_except((3, 10), (3, 11), (3, 12), (3, 13)))
 class SelfLoop3_6(ControlFlowTemplate):
     template = T(
         loop_body=~N("loop_body", None)
@@ -181,7 +199,7 @@ class WhileElse3_10(ControlFlowTemplate):
         """
 
 
-@register_template(0, 1, (3, 12), (3, 13))
+@register_template(0, 1, *versions_from(3, 12))
 class WhileElse3_12(ControlFlowTemplate):
     template = T(
         while_header=~N("while_body", "else_body"),
@@ -241,6 +259,49 @@ class WhileIfElseLoop(ControlFlowTemplate):
                 {if_body}
             {else_body?else:}
                 {else_body}
+        """
+
+
+@register_template(1, 39, *versions_from(3, 14))
+class WhileLoop3_14(ControlFlowTemplate):
+    template = T(
+        if_header=~N("if_body", "else_body").with_cond(without_top_level_instructions("WITH_EXCEPT_START", "CHECK_EXC_MATCH", "FOR_ITER", "NOP")),
+        else_body=~N("tail.").with_cond(without_top_level_instructions("RERAISE", "END_FINALLY")).with_in_deg(1),
+        if_body=~N("if_header").with_in_deg(1),
+        tail=N.tail(),
+    )
+
+    try_match = make_try_match({EdgeKind.Fall: "tail"}, "if_header", "if_body", "else_body")
+
+    @to_indented_source
+    def to_indented_source():
+        """
+        {if_header}
+            {if_body}
+        {else_body?else:}
+            {else_body}
+        """
+
+
+@register_template(1, 39, *versions_from(3, 14))
+class WhileTrueLoop3_14(ControlFlowTemplate):
+    template = T(
+        if_header=~N("if_body", "else_body").with_cond(without_top_level_instructions("WITH_EXCEPT_START", "CHECK_EXC_MATCH", "FOR_ITER")).with_cond(starting_instructions("NOP")),
+        else_body=~N("tail.").with_cond(without_top_level_instructions("RERAISE", "END_FINALLY")).with_in_deg(1),
+        if_body=~N("if_header").with_in_deg(1),
+        tail=N.tail(),
+    )
+
+    try_match = make_try_match({EdgeKind.Fall: "tail"}, "if_header", "if_body", "else_body")
+
+    @to_indented_source
+    def to_indented_source():
+        """
+        while True:
+            {if_header}
+                {else_body}
+            {if_body?else:}
+                {if_body}
         """
 
 
@@ -461,7 +522,7 @@ class FixLoop(ControlFlowTemplate):
                     # Only remove edge if there are more than 2 incoming edges to avoid breaking other control flow structures
                     if cfg.in_degree(succ) > 2:
                         cfg.remove_edge(break_node, succ)
-                    elif cfg.in_degree(succ) <= 2:
+                    elif cfg.in_degree(succ) <= 2 and succ != cfg.end:
                         # Broken: conflicting cases where removing the edge would strand blocks
                         # but also match correctly to valid Break statement nodes
                         continue

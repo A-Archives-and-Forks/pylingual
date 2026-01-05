@@ -88,8 +88,12 @@ class EditableBytecode:
         if self.version >= (3, 13):
             self.fix_make_function_argval()
 
-        low_information_instruction_blacklist = ["RESUME", "EXTENDED_ARG", "CACHE", "PRECALL", "MAKE_CELL"]
+        low_information_instruction_blacklist = ["RESUME", "EXTENDED_ARG", "CACHE", "PRECALL", "MAKE_CELL", "NOT_TAKEN", "COPY_FREE_VARS"]
         self.remove_instructions({inst for inst in self.instructions if inst.opname in low_information_instruction_blacklist})
+
+        # inline __annotate__ functions, which were added in python 3.14
+        if self.version >= (3, 14):
+            self.inline_annotate_functions()
 
         # updates attribute of instructions that contains information about the exception table
         self._add_inst_exception_attrs()
@@ -114,6 +118,59 @@ class EditableBytecode:
                     inst.argval = next_inst.argval
                 else:
                     inst.argval = 0
+
+    def inline_annotate_functions(self):
+        """In Python 3.14, type annotations are stored in implicit __annotate__ functions. This function inlines them."""
+        #  (opname, argval) pairs
+        # fmt: off
+        ANNOTATE_FUNC_PREAMBLE = (
+            ("LOAD_FAST_BORROW", "format"),
+            ("LOAD_SMALL_INT", 2),
+            ("COMPARE_OP", ">"),
+            ("POP_JUMP_IF_FALSE", 12),
+            ("LOAD_COMMON_CONSTANT", 1), # NotImplementedError
+            ("RAISE_VARARGS", 1), # exception instance
+        )
+        # fmt: on
+
+        def is_annotate_func_and_get_inlinable_insts(codeobj) -> tuple[bool, list[Inst]]:
+            if not iscode(codeobj):
+                return (False, [])
+            if not codeobj.co_name == "__annotate__":
+                return (False, [])
+            target_bc = EditableBytecode(codeobj, self.opcode, self.version)
+            target_preamble = tuple((inst.opname, inst.argval) for inst in target_bc.instructions[: len(ANNOTATE_FUNC_PREAMBLE)])
+            if target_preamble != ANNOTATE_FUNC_PREAMBLE:
+                return (False, [])
+            return (True, target_bc.instructions[len(ANNOTATE_FUNC_PREAMBLE) : -1])  # skip the RETURN_VALUE at the end
+
+        # iterate over all instructions
+        # replace any load_consts that load __annotate__ functions with the function's instructions, minus the return and the prefix
+        inline_dict = {}
+        jump_target_mapping = {}
+        for idx, inst in enumerate(self.instructions):
+            if inst.opname == "LOAD_CONST":
+                is_annotate_func, inlinable_insts = is_annotate_func_and_get_inlinable_insts(inst.argval)
+                if not is_annotate_func:
+                    continue
+
+                inline_dict[(idx, inst)] = inlinable_insts
+                jump_target_mapping[inst] = inlinable_insts[0]
+
+                # for jumps in __conditional_annotations__ that go to the omitted return, set them to jump to the next instruction
+                for new_inst in inlinable_insts:
+                    if new_inst.is_jump and new_inst.target not in inlinable_insts:
+                        jump_target_mapping[new_inst.target] = self.instructions[idx + 1]
+
+        self.insert_insts({idx + 1: insts for (idx, inst), insts in inline_dict.items()})
+        self._change_jump_targets(jump_target_mapping)
+        self.remove_instructions({inst for (idx, inst) in inline_dict.keys()})
+
+        # remove the __annotate__ functions from co_consts, but don't impact co_consts offsets
+        # we don't remove these from child_bytecodes because this runs before child_bytecodes are populated
+        for idx, inst in inline_dict.keys():
+            assert self.co_consts[inst.arg] == inst.argval
+            self.co_consts[inst.arg] = None
 
     def get_recursive_length(self):
         """Returns the recursive length of this bytecode and all its descendents"""
@@ -404,16 +461,16 @@ class EditableBytecode:
             for bc in self.iter_bytecodes():
                 patch(bc)
 
-    def _change_jump_targets(self, from_inst: Inst, to_inst: Inst):
-        """Changes the targets of any instructions jumping to "from_inst" to "to_inst".
+    def _change_jump_targets(self, jump_target_mapping: dict[Inst, Inst]):
+        """Changes the targets of any instructions jumping to any of the keys in jump_target_mapping to the corresponding values.
         Before:
             InstA --> InstB
-        After _change_jump_targets(InstB, InstC):
+        After _change_jump_targets({InstB: InstC}):
             InstA --> !!InstC!!
         """
         for i, inst in enumerate(self):
-            if inst.is_jump and inst.target == from_inst:
-                self[i]._target = to_inst
+            if inst.is_jump and inst.target in jump_target_mapping:
+                self[i]._target = jump_target_mapping[inst.target]
 
     def collapse_unconditional_jumps(self):
         """Causes unnecessary unconditional jumps to "collapse" into a single jump."""
@@ -582,6 +639,75 @@ class EditableBytecode:
         self._edited = True
 
         return len(to_remove)
+
+    def insert_insts(self, insert_dict: dict[int, list[Inst]]) -> int:
+        """Inserts the specified lists of instructions at each specified index."""
+
+        if not any(insert_dict.values()):
+            return 0
+
+        if any(idx < 0 or idx > len(self.instructions) for idx in insert_dict.keys()):
+            raise IndexError("Index out of range")
+
+        self.regenerate()
+        self._edited = True
+
+        # store an instruction-based copy of the exception table to make offset fixing easier at the end
+        temp_exception_table = {self.get_by_offset(start): (self.get_by_offset(end), self.get_by_offset(target)) for start, (end, target) in self.exception_table.items()}
+        temp_named_exception_table = dict()
+        if self.named_exception_table:
+            temp_named_exception_table = [(self.get_by_offset(e.start), self.get_by_offset(e.end), self.get_by_offset(e.target), e.depth, e.lasti) for e in self.named_exception_table]
+
+        # insert instructions
+        # go from small to large indices, and track how the indices change as we insert
+        inserted_count = 0
+        for idx, insts in sorted(insert_dict.items(), key=lambda x: x[0]):
+            real_idx = idx + inserted_count
+            self.instructions = self.instructions[:real_idx] + insts + self.instructions[real_idx:]
+            inserted_count += len(insts)
+
+        to_insert = [inst for insts in insert_dict.values() for inst in insts]
+        for inst in to_insert:
+            # set bytecode backpointer
+            inst.bytecode = self
+
+            # add names and consts
+            if inst.optype == "const":
+                if inst.argval not in self.co_consts:
+                    self.co_consts.append(inst.argval)
+                inst.arg = self.co_consts.index(inst.argval)
+            elif inst.optype == "name":
+                if inst.argval not in self.co_names:
+                    self.co_names.append(inst.argval)
+                inst.arg = self.co_names.index(inst.argval)
+            elif inst.optype == "free":
+                if inst.argval not in self.co_varnames:
+                    self.co_varnames.append(inst.argval)
+                inst.arg = self.co_varnames.index(inst.argval)
+
+        self._edited = True
+        self.regenerate()  # recalculate offsets
+
+        # fix jump target argval and argrepr
+        for inst in self.instructions:
+            inst.is_jump_target = False
+        for inst in self.instructions:
+            if not inst.is_jump:
+                continue
+            inst.argval = inst.target.offset
+            inst.argrepr = f"to {inst.argval}"
+            inst.target.is_jump_target = True
+
+        # fix exception table offsets
+        self.exception_table = {start.offset: (end.offset, target.offset) for start, (end, target) in temp_exception_table.items()}
+        if temp_named_exception_table:
+            # also delete entries that will never trigger (end is non-inclusive)
+            self.named_exception_table = [_ExceptionTableEntry(start.offset, end.offset, target.offset, depth, lasti) for (start, end, target, depth, lasti) in temp_named_exception_table if start.offset < end.offset]
+        self._add_inst_exception_attrs()
+
+        self._edited = True
+
+        return len(to_insert)
 
     def new_instruction(self, *args, **kwargs):
         """Creates a new instruction for use with this EditableBytecode object. This function does NOT automatically insert the instruction."""
@@ -830,9 +956,10 @@ class EditableBytecode:
         instruction_before = self[i.start - 1] if i.start is not None and i.start > 0 else None
         instruction_after = self[i.stop] if i.stop is not None and i.stop <= len(self) else None
 
+        jump_target_mapping = {}
         for j, inst in enumerate(insts):
             if isinstance(value, (list, tuple)) and len(insts) == len(value):
-                self._change_jump_targets(inst, value[j])
+                jump_target_mapping[inst] = value[j]
             else:
                 new_target = instruction_before or instruction_after
                 if not new_target and len(value) > 0:
@@ -841,8 +968,9 @@ class EditableBytecode:
                     pass  # They should have used __del__
 
                 if new_target:
-                    self._change_jump_targets(inst, new_target)
+                    jump_target_mapping[inst] = new_target
 
+        self._change_jump_targets(jump_target_mapping)
         self.instructions[i] = value
         self._edited = True
 
@@ -856,11 +984,12 @@ class EditableBytecode:
         instruction_before = self[i.start - 1] if i.start is not None and i.start > 0 else None
         instruction_after = self[i.stop] if i.stop is not None and i.stop <= len(self) else None
 
+        jump_target_mapping = {}
         for inst in insts:
             new_target = instruction_before or instruction_after
-
             if new_target:
-                self._change_jump_targets(inst, new_target)
+                jump_target_mapping[inst] = new_target
+        self._change_jump_targets(jump_target_mapping)
 
         del self.instructions[i]
         self._edited = True

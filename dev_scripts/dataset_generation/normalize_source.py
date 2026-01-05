@@ -35,8 +35,8 @@ def normalize_source(
     tree = ast.parse(source, feature_version=version)
     if replace_docstrings:
         for node in ast.walk(tree):
-            if isinstance(node, ast.Expr) and isinstance(node.value, ast.Str):
-                node.value.s = "pass"
+            if isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+                node.value.value = "pass"
     return ast.unparse(tree)
 
 
