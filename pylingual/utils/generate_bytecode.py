@@ -41,6 +41,8 @@ def _compile_uv(py_file: str, out_file: str, version: PythonVersion):
 
     # Ignore stderr messages from uv downloading versions on demand
     stderr = re.sub(r"\s*Download(ing|ed)\s.+\n", "", output.stderr)
+    # Ignore stderr messages from uv logging that compilation occurred
+    stderr = re.sub(r"\s*Bytecode compiled \d+ files? in \d+ms\n", "", stderr)
     if stderr:
         raise CompileError(stderr)
 
