@@ -44,6 +44,17 @@ class CacheTranslator:
         return self.cache[item]
 
     def _translate_and_decode(self, translation_requests: TrackedDataset | list[str], batch_size: int = 32, **kwargs) -> list[str]:
+        # Check for inputs that exceed the model's maximum input length
+        # T5 models typically have a max input length of 512 tokens
+        model_max_length = getattr(self.translator.model.config, 'n_positions', 512)
+        
+        for i, request in enumerate(translation_requests):
+            tokenized = self.translator.tokenizer(request, return_tensors="pt", truncation=False)
+            input_length = tokenized['input_ids'].shape[1]
+            
+            if input_length > model_max_length:
+                raise ValueError(f"Input {i} exceeds model maximum length ({input_length} > {model_max_length} tokens). This bytecode statement is too long to decompile.")
+        
         # return_tensors=True prevents standard postprocessing which skips special tokens
         translation_result = self.translator(translation_requests, return_tensors=True, batch_size=batch_size, **kwargs)
         decoded_results = []
@@ -70,9 +81,13 @@ class CacheTranslator:
         for request in translation_requests:
             try:
                 translation_results.append(self._translate_and_decode([request], batch_size=1)[0])
-            except Exception:
+            except Exception as e:
                 # last resort fallback
-                translation_results.append("'''Decompiler error: line too long for translation. Please decompile this statement manually.'''")
+                # Check if it's a token limit error
+                if "exceeds model maximum length" in str(e):
+                    translation_results.append("'''Decompiler error: statement exceeds model token limit. This bytecode is too long to decompile automatically.'''")
+                else:
+                    translation_results.append("'''Decompiler error: line too long for translation. Please decompile this statement manually.'''")
         return translation_results
 
     def __call__(self, args: list, **_):
