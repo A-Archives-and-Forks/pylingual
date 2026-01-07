@@ -157,9 +157,12 @@ class EditableBytecode:
         def try_read_annotate_func(codeobj) -> EditableBytecode | None:
             if not iscode(codeobj):
                 return None
-            if not codeobj.co_name == "__annotate__":
-                return None
             target_bc = EditableBytecode(codeobj, self.opcode, self.version)
+
+            # type definitions use annotate-style functions, but they are named based on the type and use .format instead of format
+            if not codeobj.co_name == "__annotate__" and target_bc.instructions[0].argval == ".format":
+                target_bc.instructions[0].argval = "format"
+
             target_preamble = tuple((inst.opname, inst.argval) for inst in target_bc.instructions[: len(ANNOTATE_FUNC_PREAMBLE)])
             if target_preamble != ANNOTATE_FUNC_PREAMBLE:
                 return None
