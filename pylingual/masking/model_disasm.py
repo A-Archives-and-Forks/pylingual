@@ -56,6 +56,9 @@ def create_global_masker(bytecode: EditableBytecode) -> Masker:
                 continue
             if type(const) in (list, tuple, frozenset, set):
                 consts.extend(const)
+            elif type(const) is slice:
+                # decompose slice constants for 3.14+
+                consts.extend([const.start, const.stop, const.step])
             else:
                 global_tab.update({bc.resolve_namespace(const): f"<mask_{global_idx}>"})
                 global_idx += 1

@@ -195,6 +195,8 @@ class Masker:
                             continue  # don't mask None
                         elif type(const) in (list, tuple, frozenset):
                             consts[idx] = type(const)(replace_list(list(const)))
+                        elif type(const) is slice:
+                            consts[idx] = f"{self.mask(const.start)} : {self.mask(const.stop)} : {self.mask(const.step)}"
                         else:
                             consts[idx] = self.mask(const)
                     return consts
@@ -214,6 +216,8 @@ class Masker:
                 # demote quotes one layer
                 arg_repr = repr(type(inst.argval)(consts)).replace("'", "").replace('"', "'")
                 view = f"{inst.opname} , {arg_repr}"
+            elif type(inst.argval) is slice:
+                view = f"{inst.opname} , {self.mask(inst.argval.start)} : {self.mask(inst.argval.stop)} : {self.mask(inst.argval.step)}"
             else:
                 view = f"{inst.opname} , {self.mask(inst.bytecode.resolve_namespace(inst.argval))}"
 
