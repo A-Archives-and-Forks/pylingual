@@ -39,6 +39,7 @@ Usage: pylingual [OPTIONS] [FILES]...
   End to end pipeline to decompile Python bytecode into source code.
 
 Options:
+  -d, --directory PATH    Directory to recursively search for .pyc files.
   -o, --out-dir PATH      The directory to export results to.
   -c, --config-file PATH  Config file for model information.
   -v, --version VERSION   Python version of the .pyc, default is auto

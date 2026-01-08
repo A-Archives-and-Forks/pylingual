@@ -57,6 +57,7 @@ def print_result(title: str, results: list[TestResult]):
 
 @click.command(help="End to end pipeline to decompile Python bytecode into source code.", context_settings={"help_option_names": ["-h", "--help"]})
 @click.argument("files", nargs=-1)
+@click.option("-d", "--directory", default=None, type=Path, help="Directory to recursively search for .pyc files.", metavar="PATH")
 @click.option("-o", "--out-dir", default=None, type=Path, help="The directory to export results to.", metavar="PATH")
 @click.option("-c", "--config-file", default=None, type=Path, help="Config file for model information.", metavar="PATH")
 @click.option("-v", "--version", default=None, type=PythonVersion, help="Python version of the .pyc, default is auto detection.", metavar="VERSION")
@@ -64,19 +65,34 @@ def print_result(title: str, results: list[TestResult]):
 @click.option("-q", "--quiet", is_flag=True, default=False, help="Suppress console output.")
 @click.option("--trust-lnotab", is_flag=True, default=False, help="Use the lnotab for segmentation instead of the segmentation model.")
 @click.option("--init-pyenv", is_flag=True, default=False, help="Install pyenv before decompiling.")
-def main(files: list[str], out_dir: Path | None, config_file: Path | None, version: PythonVersion | None, top_k: int, trust_lnotab: bool, init_pyenv: bool, quiet: bool):
+def main(files: list[str], directory: Path | None, out_dir: Path | None, config_file: Path | None, version: PythonVersion | None, top_k: int, trust_lnotab: bool, init_pyenv: bool, quiet: bool):
     rich.reconfigure(markup=False, emoji=False, quiet=quiet, theme=Theme({"logging.keyword": "yellow not bold"}))
     console = rich.get_console()
     log_handler = RichHandler(console=console, rich_tracebacks=True)
     logging.basicConfig(level="INFO", format="%(message)s", datefmt="[%X]", handlers=[log_handler], force=True)
 
-    if not init_pyenv and not files:
+    # Collect files from directory if specified
+    file_list = list(files)
+    if directory:
+        if not directory.exists():
+            logger.error(f"Directory {directory} does not exist")
+            return
+        if not directory.is_dir():
+            logger.error(f"{directory} is not a directory")
+            return
+        # Recursively find all .pyc files in the directory
+        pyc_files = list(directory.rglob("*.pyc"))
+        if not pyc_files:
+            logger.warning(f"No .pyc files found in {directory}")
+        file_list.extend(str(f) for f in pyc_files)
+
+    if not init_pyenv and not file_list:
         click.echo(click.get_current_context().get_help())
         return
 
     print_header()
 
-    if init_pyenv and (not install_pyenv() or not files):
+    if init_pyenv and (not install_pyenv() or not file_list):
         return
 
     if out_dir:
@@ -101,7 +117,7 @@ def main(files: list[str], out_dir: Path | None, config_file: Path | None, versi
     # the step is not done until the TrackedList is deleted
     TrackedList.__del__ = lambda self: progress.advance(self.task.id, 9e999)
 
-    n = len(files)
+    n = len(file_list)
     with Live(Group(Rule(), status, progress), transient=True, console=console, refresh_per_second=12.5) as live:
         transformers.logging.disable_default_handler()
         transformers.logging.add_handler(log_handler)
@@ -109,7 +125,7 @@ def main(files: list[str], out_dir: Path | None, config_file: Path | None, versi
         progress.add_task(TRANSLATION_STEP, start=False)
         progress.add_task(CFLOW_STEP, start=False)
         progress.add_task(CORRECTION_STEP, start=False)
-        for i, file in enumerate(files):
+        for i, file in enumerate(file_list):
             for task in progress.tasks:
                 progress.reset(task.id, start=False)
             pyc_path = Path(file)
