@@ -30,6 +30,7 @@ import re
 import tempfile
 import sys
 import shutil
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -99,7 +100,7 @@ class Decompiler:
     :param trust_lnotab: Decides whether or not to use line number information
     """
 
-    def __init__(self, pyc: PYCFile, segmenter: transformers.Pipeline, translator: CacheTranslator, version: PythonVersion, top_k=10, trust_lnotab=False):
+    def __init__(self, pyc: PYCFile, segmenter: transformers.Pipeline, translator: CacheTranslator, version: PythonVersion, top_k=10, trust_lnotab=False, timeout=None):
         self.pyc = pyc
         self.pyc.copy()
         self.name = pyc.pyc_path.name if pyc.pyc_path is not None else repr(pyc)
@@ -110,16 +111,27 @@ class Decompiler:
         self.highest_k_used = 0
         self.tmpn = 0
         self.trust_lnotab = trust_lnotab
+        self.timeout = timeout
+        self.start_time = time.time()
+
+    def check_timeout(self):
+        if self.timeout is not None and time.time() - self.start_time > self.timeout:
+            raise TimeoutError(f"Decompilation of {self.name} timed out after {self.timeout} seconds")
 
     def __call__(self):
         with tempfile.TemporaryDirectory() as tmp:
             self.tmp = Path(tmp)
 
             self.mask_bytecode()
+            self.check_timeout()
             self.run_segmentation()
+            self.check_timeout()
             self.run_translation()
+            self.check_timeout()
             self.unmask_lines()
+            self.check_timeout()
             self.run_cflow_reconstruction()
+            self.check_timeout()
             self.reconstruct_source()
 
             self.equivalence_results = self.check_reconstruction(self.indented_source)
@@ -247,7 +259,7 @@ class Decompiler:
 
             window_coordinates, flat_window_requests, inst_index = zip(*window_segmentation_requests)
 
-            window_segmentation_results = [filter_subwords(segmentation_result) for segmentation_result in self.segmenter(TrackedDataset(SEGMENTATION_STEP, list(flat_window_requests)), batch_size=8)]
+            window_segmentation_results = [filter_subwords(segmentation_result) for segmentation_result in self.segmenter(TrackedDataset(SEGMENTATION_STEP, list(flat_window_requests), check_timeout=self.check_timeout), batch_size=8)]
 
             self.segmentation_results = merge(list(window_coordinates), window_segmentation_results, list(inst_index), MAX_WINDOW_LENGTH, STEP_SIZE)  # merge everything
 
@@ -292,7 +304,7 @@ class Decompiler:
             for instructions, boundary_predictions in zip(self.ordered_instructions, self.segmentation_results):
                 translation_requests.append(self.make_translation_request(instructions, boundary_predictions))
             flattened_translation_requests = list(itertools.chain.from_iterable(translation_requests))
-            self.translation_results = self.translator(flattened_translation_requests)
+            self.translation_results = self.translator(flattened_translation_requests, check_timeout=self.check_timeout)
             unflatten(self.translation_results, translation_requests)
             self.update_source_lines()
         except Exception as e:
@@ -302,7 +314,7 @@ class Decompiler:
     def run_cflow_reconstruction(self):
         logger.info(f"Reconstructing control flow for {self.name}...")
         try:
-            cfts = {bc.codeobj: bc_to_cft(bc, self.source_lines) for bc in TrackedList(CFLOW_STEP, self.ordered_bytecodes)}
+            cfts = {bc.codeobj: bc_to_cft(bc, self.source_lines) for bc in TrackedList(CFLOW_STEP, self.ordered_bytecodes, check_timeout=self.check_timeout)}
             self.source_context = SourceContext(self.pyc, self.source_lines, cfts)
             version = magicint2version.get(self.pyc.magic, "?")
             time = datetime.datetime.fromtimestamp(self.pyc.timestamp, datetime.UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
@@ -352,7 +364,7 @@ class Decompiler:
         logger.info(f"Checking decompilation for {self.name}...")
         src = self.tmpfile()
         pyc = self.tmpfile()
-        src.write_text(source, encoding='utf-8')
+        src.write_text(source, encoding="utf-8")
         try:
             compile_version(src, pyc, self.version)
         except CompileError as e:
@@ -428,7 +440,7 @@ class Decompiler:
                     inst.starts_line = None
 
 
-def decompile(pyc: PYCFile | Path, save_to: Path | None = None, config_file: Path | None = None, version: str | None = None, top_k: int = 10, trust_lnotab: bool = False) -> DecompilerResult:
+def decompile(pyc: PYCFile | Path, save_to: Path | None = None, config_file: Path | None = None, version: str | None = None, top_k: int = 10, trust_lnotab: bool = False, timeout: int | None = None) -> DecompilerResult:
     """
     Decompile a PYC file.
 
@@ -438,6 +450,7 @@ def decompile(pyc: PYCFile | Path, save_to: Path | None = None, config_file: Pat
     :param version: Loads the models corresponding to this python version. if None, automatically detects version based on input PYC file.
     :param top_k: Max number of pyc segmentations to consider.
     :param trust_lnotab: Trust the lnotab in the input PYC for segmentation (False recommended).
+    :param timeout: Maximum time in seconds to allow decompilation to run.
     :return: DecompilerResult class including important information about decompilation
     """
     logger.info(f"Loading {pyc}...")
@@ -472,12 +485,12 @@ def decompile(pyc: PYCFile | Path, save_to: Path | None = None, config_file: Pat
         logger.info(f"Decompiling pyc {pyc.pyc_path.resolve() if pyc.pyc_path else repr(pyc)} to {save_to.resolve()}")
     else:
         logger.info(f"Decompiling pyc {pyc.pyc_path.resolve() if pyc.pyc_path else repr(pyc)}")
-    decompiler = Decompiler(pyc, segmenter, translator, pversion, top_k, trust_lnotab)
+    decompiler = Decompiler(pyc, segmenter, translator, pversion, top_k, trust_lnotab, timeout)
     result = decompiler()
 
     logger.info("Decompilation complete")
     logger.info(f"{result.calculate_success_rate():.2%} code object success rate")
     if save_to:
-        save_to.write_text(result.decompiled_source, encoding='utf-8')
+        save_to.write_text(result.decompiled_source, encoding="utf-8")
         logger.info(f"Result saved to {save_to}")
     return result

@@ -85,13 +85,14 @@ class CacheTranslator:
                 translation_results.append("'''Decompiler error: line too long for translation. Please decompile this statement manually.'''")
         return translation_results
 
-    def __call__(self, args: list, **_):
+    def __call__(self, args: list, check_timeout: callable = None, **_):
         normalized_args = [normalize_masks(fix_jump_targets(x)) for x in args]
 
         # New are those not in the local cache
         new = TrackedDataset(
             TRANSLATION_STEP,
             list({norm for norm, _ in normalized_args if norm not in self.cache}),
+            check_timeout=check_timeout,
         )
 
         # Now, "new" has been updated to those not in local

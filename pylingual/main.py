@@ -97,7 +97,8 @@ def collect_files(paths: list[Path], out_dir: Path, flatten: bool) -> list[tuple
 @click.option("--force", is_flag=True, default=False, help="Overwrite existing output files.")
 @click.option("--trust-lnotab", is_flag=True, default=False, help="Use the lnotab for segmentation instead of the segmentation model.")
 @click.option("--init-pyenv", is_flag=True, default=False, help="Install pyenv before decompiling.")
-def main(files: list[Path], out_dir: Path | None, config_file: Path | None, version: PythonVersion | None, top_k: int, flatten: bool, force: bool, trust_lnotab: bool, init_pyenv: bool, quiet: bool):
+@click.option("--timeout", default=None, type=int, help="Maximum time in seconds to allow decompilation to run per file.", metavar="SECONDS")
+def main(files: list[Path], out_dir: Path | None, config_file: Path | None, version: PythonVersion | None, top_k: int, flatten: bool, force: bool, trust_lnotab: bool, init_pyenv: bool, quiet: bool, timeout: int | None):
     rich.reconfigure(markup=False, emoji=False, quiet=quiet, theme=Theme({"logging.keyword": "yellow not bold"}))
     console = rich.get_console()
     log_handler = RichHandler(console=console, rich_tracebacks=True)
@@ -173,9 +174,13 @@ def main(files: list[Path], out_dir: Path | None, config_file: Path | None, vers
                     version=version,
                     top_k=top_k,
                     trust_lnotab=trust_lnotab,
+                    timeout=timeout,
                 )
                 pyc = result.original_pyc
                 print_result(f"Equivalence Results for {pyc.pyc_path.name if pyc.pyc_path else repr(pyc)}", result.equivalence_results)
+            except TimeoutError as e:
+                logger.error(str(e))
+                continue
             except Exception:
                 logger.exception(f"Failed to decompile {pyc_path}")
             console.rule()
