@@ -94,9 +94,10 @@ def collect_files(paths: list[Path], out_dir: Path, flatten: bool) -> list[tuple
 @click.option("-k", "--top-k", default=10, type=int, help="Maximum number of additional segmentations to consider.", metavar="INT")
 @click.option("-q", "--quiet", is_flag=True, default=False, help="Suppress console output.")
 @click.option("--flatten", is_flag=True, default=False, help="Flatten the output directory. (Only used if files list contains directories)")
+@click.option("--force", is_flag=True, default=False, help="Overwrite existing output files.")
 @click.option("--trust-lnotab", is_flag=True, default=False, help="Use the lnotab for segmentation instead of the segmentation model.")
 @click.option("--init-pyenv", is_flag=True, default=False, help="Install pyenv before decompiling.")
-def main(files: list[Path], out_dir: Path | None, config_file: Path | None, version: PythonVersion | None, top_k: int, flatten: bool, trust_lnotab: bool, init_pyenv: bool, quiet: bool):
+def main(files: list[Path], out_dir: Path | None, config_file: Path | None, version: PythonVersion | None, top_k: int, flatten: bool, force: bool, trust_lnotab: bool, init_pyenv: bool, quiet: bool):
     rich.reconfigure(markup=False, emoji=False, quiet=quiet, theme=Theme({"logging.keyword": "yellow not bold"}))
     console = rich.get_console()
     log_handler = RichHandler(console=console, rich_tracebacks=True)
@@ -159,6 +160,9 @@ def main(files: list[Path], out_dir: Path | None, config_file: Path | None, vers
             status.update(f"Decompiling {pyc_path} ({i + 1} / {n})")
             if not pyc_path.exists():
                 logger.error(f"pyc file {pyc_path} does not exist")
+                continue
+            if save_path.exists() and not force:
+                logger.warning(f"Output file {save_path} already exists. Skipping.")
                 continue
 
             try:
