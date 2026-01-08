@@ -152,6 +152,7 @@ class EditableBytecode:
             ("SET_FUNCTION_ATTRIBUTE", 8), # closure
             ("STORE_NAME", "__annotate_func__"),
         )
+
         # fmt: on
 
         def try_read_annotate_func(codeobj) -> EditableBytecode | None:
@@ -264,14 +265,23 @@ class EditableBytecode:
             # handle function definition annotations
             if inst.opname == "LOAD_CONST":
                 is_annotate_func, inlinable_insts = is_annotate_func_and_get_inlinable_insts(inst.argval)
-                if not is_annotate_func:
+                if is_annotate_func:
+                    # replace
+                    # LOAD_CONST __annotate__
+                    # MAKE_FUNCTION
+                    inline_dict[(idx, tuple(self.instructions[idx : idx + 2]))] = inlinable_insts
+                    jump_target_mapping[inst] = inlinable_insts[0]
                     continue
 
-                # replace
-                # LOAD_CONST __annotate__
-                # MAKE_FUNCTION
-                inline_dict[(idx, tuple(self.instructions[idx : idx + 2]))] = inlinable_insts
-                jump_target_mapping[inst] = inlinable_insts[0]
+                if iscode(inst.argval) and inst.argval.co_name.startswith("<generic parameters of "):
+                    # fully inline generics
+                    # replace
+                    # LOAD_CONST <generic parameters of <function name>>
+                    # MAKE_FUNCTION
+                    generic_bc = EditableBytecode(inst.argval, self.opcode, self.version)
+                    inline_dict[(idx, tuple(self.instructions[idx : idx + 2]))] = generic_bc.instructions[:-1]
+                    jump_target_mapping[inst] = generic_bc.instructions[0]
+                    continue
 
             # handle inline variable annotations
             elif inst.opname in ("LOAD_NAME", "LOAD_DEREF") and inst.argval == "__conditional_annotations__":
@@ -811,7 +821,7 @@ class EditableBytecode:
                 if inst.argval not in self.co_names:
                     self.co_names.append(inst.argval)
                 inst.arg = self.co_names.index(inst.argval)
-            elif inst.optype == "free":
+            elif inst.optype == "free" or inst.optype == "local":
                 if inst.argval not in self.co_varnames:
                     self.co_varnames.append(inst.argval)
                 inst.arg = self.co_varnames.index(inst.argval)

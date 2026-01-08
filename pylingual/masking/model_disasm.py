@@ -65,10 +65,17 @@ def create_global_masker(bytecode: EditableBytecode) -> Masker:
 
         # create names
         for name in bc_co.co_names:
-            if name in global_tab:
-                continue
-            global_tab.update({bc.resolve_namespace(name): f"<mask_{global_idx}>"})
-            global_idx += 1
+            if isinstance(name, tuple):
+                for n in name:
+                    if n in global_tab:
+                        continue
+                    global_tab.update({bc.resolve_namespace(n): f"<mask_{global_idx}>"})
+                    global_idx += 1
+            else:
+                if name in global_tab:
+                    continue
+                global_tab.update({bc.resolve_namespace(name): f"<mask_{global_idx}>"})
+                global_idx += 1
 
         for free in bc_co.co_freevars:
             if free in global_tab:
@@ -84,10 +91,17 @@ def create_global_masker(bytecode: EditableBytecode) -> Masker:
                 global_idx += 1
 
         for local in bc_co.co_varnames:
-            if local in global_tab:
-                continue
-            global_tab.update({bc.resolve_namespace(local): f"<mask_{global_idx}>"})
-            global_idx += 1
+            if isinstance(local, tuple):
+                for local_item in local:
+                    if local_item in global_tab:
+                        continue
+                    global_tab.update({bc.resolve_namespace(local_item): f"<mask_{global_idx}>"})
+                    global_idx += 1
+            else:
+                if local in global_tab:
+                    continue
+                global_tab.update({bc.resolve_namespace(local): f"<mask_{global_idx}>"})
+                global_idx += 1
 
         global_tab.update({bc_co.co_name: f"<mask_{global_idx}>"})
         global_idx += 1
