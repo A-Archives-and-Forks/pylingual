@@ -18,10 +18,11 @@ class TrackedList:
     Used to display progress bars when PyLingual is run as a script, does nothing otherwise
     """
 
-    def __init__(self, name: str, x: list):
+    def __init__(self, name: str, x: list, check_timeout: callable = None):
         self.name = name
         self.x = x
         self.i = 0
+        self.check_timeout = check_timeout
         self.init()
 
     # overwritten when run as script
@@ -29,6 +30,8 @@ class TrackedList:
         pass
 
     def __getitem__(self, i):
+        if self.check_timeout:
+            self.check_timeout()
         self.progress(i - self.i)
         self.i = i
         return self.x[i]
@@ -40,6 +43,8 @@ class TrackedList:
         return self
 
     def __next__(self):
+        if self.check_timeout:
+            self.check_timeout()
         try:
             n = self.x[self.i]
         except:
@@ -58,6 +63,6 @@ class TrackedDataset(TrackedList):
     Like TrackedList, but inherits from Dataset
     """
 
-    def __init__(self, name: str, x: list):
-        super().__init__(name, x)
+    def __init__(self, name: str, x: list, check_timeout: callable = None):
+        super().__init__(name, x, check_timeout)
         TrackedDataset.__bases__ = (TrackedList, transformers.pipelines.base.Dataset)

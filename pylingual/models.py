@@ -6,8 +6,13 @@ import logging
 from collections import OrderedDict
 from pathlib import Path
 from typing import TYPE_CHECKING
+from functools import lru_cache
 
-from pylingual.masking.model_disasm import fix_jump_targets, normalize_masks, restore_masks
+from pylingual.masking.model_disasm import (
+    fix_jump_targets,
+    normalize_masks,
+    restore_masks,
+)
 from pylingual.utils.lists import flatten
 from pylingual.utils.tracked_list import TrackedDataset, TRANSLATION_STEP
 from pylingual.utils.version import PythonVersion
@@ -43,7 +48,12 @@ class CacheTranslator:
         self.cache.move_to_end(item)
         return self.cache[item]
 
-    def _translate_and_decode(self, translation_requests: TrackedDataset | list[str], batch_size: int = 32, **kwargs) -> list[str]:
+    def _translate_and_decode(
+        self,
+        translation_requests: TrackedDataset | list[str],
+        batch_size: int = 32,
+        **kwargs,
+    ) -> list[str]:
         # return_tensors=True prevents standard postprocessing which skips special tokens
         translation_result = self.translator(translation_requests, return_tensors=True, batch_size=batch_size, **kwargs)
         decoded_results = []
@@ -75,11 +85,15 @@ class CacheTranslator:
                 translation_results.append("'''Decompiler error: line too long for translation. Please decompile this statement manually.'''")
         return translation_results
 
-    def __call__(self, args: list, **_):
+    def __call__(self, args: list, check_timeout: callable = None, **_):
         normalized_args = [normalize_masks(fix_jump_targets(x)) for x in args]
 
         # New are those not in the local cache
-        new = TrackedDataset(TRANSLATION_STEP, list({norm for norm, _ in normalized_args if norm not in self.cache}))
+        new = TrackedDataset(
+            TRANSLATION_STEP,
+            list({norm for norm, _ in normalized_args if norm not in self.cache}),
+            check_timeout=check_timeout,
+        )
 
         # Now, "new" has been updated to those not in local
         for arg, result in zip(new.x, self._translate_with_backoff(new)):
@@ -91,7 +105,12 @@ class CacheTranslator:
         return results
 
 
-def load_models(config_file: Path = Path("pylingual/decompiler_config.yaml"), version: PythonVersion = PythonVersion(3.9), token=False) -> tuple[transformers.Pipeline, CacheTranslator]:
+@lru_cache(maxsize=1)
+def load_models(
+    config_file: Path = Path("pylingual/decompiler_config.yaml"),
+    version: PythonVersion = PythonVersion(3.9),
+    token=False,
+) -> tuple[transformers.Pipeline, CacheTranslator]:
     logger.info(f"Loading models for {version}...")
     with config_file.open() as f:
         config = yaml.safe_load(f)
@@ -124,12 +143,24 @@ def load_models(config_file: Path = Path("pylingual/decompiler_config.yaml"), ve
     else:
         logger.warning("Using CPU for models")
         device = torch.device("cpu")
-    segmenter = transformers.pipeline("token-classification", model=segmentation_model, tokenizer=segmentation_tokenizer, aggregation_strategy="none", device=device)
+    segmenter = transformers.pipeline(
+        "token-classification",
+        model=segmentation_model,
+        tokenizer=segmentation_tokenizer,
+        aggregation_strategy="none",
+        device=device,
+    )
     #########################################
     # Sequence translation model components #
     #########################################
     translation_model = transformers.T5ForConditionalGeneration.from_pretrained(stmt_config["REPO"], revision=stmt_config["REVISION"], token=token)
     translation_tokenizer = transformers.RobertaTokenizer.from_pretrained(stmt_config["TOKENIZER"], token=token)
-    translator = transformers.TranslationPipeline(model=translation_model, tokenizer=translation_tokenizer, max_length=512, truncation=False, device=device)
+    translator = transformers.TranslationPipeline(
+        model=translation_model,
+        tokenizer=translation_tokenizer,
+        max_length=512,
+        truncation=False,
+        device=device,
+    )
 
     return segmenter, CacheTranslator(translator)

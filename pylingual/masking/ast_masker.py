@@ -1,13 +1,21 @@
 import ast
+import sys
 import re
 import copy
 from pylingual.masking.global_masker import Masker
 from pylingual.utils.version import PythonVersion
 
+_RUNTIME_PYTHON_VERSION = PythonVersion(sys.version_info)
 
-class customUnparser(ast._Unparser):
+if _RUNTIME_PYTHON_VERSION >= (3, 14):
+    from _ast_unparse import Unparser
+else:
+    Unparser = ast._Unparser
+
+
+class customUnparser(Unparser):
     def __init__(self, masker: Masker, **kwargs):
-        ast._Unparser.__init__(self, **kwargs)
+        Unparser.__init__(self, **kwargs)
         self.masker = masker
 
     def visit_Constant(self, node):
@@ -28,7 +36,10 @@ class customUnparser(ast._Unparser):
 
     def visit_FormattedValue(self, node):
         def unparse_inner(inner):
-            unparser = type(self)(self.masker, _avoid_backslashes=True)
+            if _RUNTIME_PYTHON_VERSION <= (3, 11):
+                unparser = type(self)(self.masker, _avoid_backslashes=True)
+            else:
+                unparser = type(self)(self.masker)
             unparser.set_precedence(ast._Precedence.TEST.next(), inner)
             return unparser.visit(inner)
 

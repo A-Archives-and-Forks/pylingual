@@ -10,6 +10,7 @@ from datetime import datetime
 
 from dataclasses import dataclass, asdict
 
+
 @dataclass
 class EvaluationResult:
     success: set[Path]
@@ -18,34 +19,34 @@ class EvaluationResult:
     error: set[Path]
 
     @classmethod
-    def from_dict(cls, data: dict[str, list[Path]]) -> 'EvaluationResult':
+    def from_dict(cls, data: dict[str, list[Path]]) -> "EvaluationResult":
         return cls(
-            success = set(data.get('success', [])),
-            failure = set(data.get('failure', [])),
-            compile_error = set(data.get('compile_error', [])),
-            error = set(data.get('error', [])),
+            success=set(data.get("success", [])),
+            failure=set(data.get("failure", [])),
+            compile_error=set(data.get("compile_error", [])),
+            error=set(data.get("error", [])),
         )
-    
+
     @classmethod
-    def import_json(cls, json_path: Path) -> 'EvaluationResult':
+    def import_json(cls, json_path: Path) -> "EvaluationResult":
         with json_path.open("r") as f:
             return cls.from_dict(json.load(f))
-    
+
     def to_dict(self):
         return asdict(self)
 
     def export_json(self, json_path: Path):
         jsonable_dict = {
-            'success': sorted(self.success),
-            'failure': sorted(self.failure),
-            'compile_error': sorted(self.compile_error),
-            'error': sorted(self.error),
+            "success": sorted(self.success),
+            "failure": sorted(self.failure),
+            "compile_error": sorted(self.compile_error),
+            "error": sorted(self.error),
         }
         with json_path.open("w") as f:
             json.dump(jsonable_dict, f, indent=2)
 
     def __post_init__(self):
-        assert len(set.intersection(self.success, self.failure, self.compile_error, self.error)) == 0, 'Malformed evaluation result. Paths appear in multiple categories.'
+        assert len(set.intersection(self.success, self.failure, self.compile_error, self.error)) == 0, "Malformed evaluation result. Paths appear in multiple categories."
 
 
 # --- Constants and Configuration ---
@@ -55,15 +56,27 @@ HARNESS_DIR = PROJECT_ROOT / ".eval_harness"
 CACHE_DIR = HARNESS_DIR / "results_cache"
 LOCAL_WORKSPACE = HARNESS_DIR / "local"
 
-SUPPORTED_PYTHON_VERSIONS = ('3.6', '3.7', '3.8', '3.9', '3.10', '3.11', '3.12', '3.13')
+SUPPORTED_PYTHON_VERSIONS = (
+    "3.6",
+    "3.7",
+    "3.8",
+    "3.9",
+    "3.10",
+    "3.11",
+    "3.12",
+    "3.13",
+    "3.14",
+)
 
 # Rich console for pretty printing
 console = Console()
 
+
 def _get_cache_path(commit_hash: str, eval_file_list_path: Path, python_version: str) -> Path:
-    cache_path = CACHE_DIR / python_version / commit_hash / eval_file_list_path.with_suffix('.json').name
+    cache_path = CACHE_DIR / python_version / commit_hash / eval_file_list_path.with_suffix(".json").name
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     return cache_path
+
 
 def run_command(command, cwd=None, capture_output=False, text=True):
     """A helper to run a shell command and handle errors."""
@@ -96,7 +109,7 @@ def get_head_commit_hash():
     return run_command(["git", "rev-parse", "--short", "HEAD"], capture_output=True).stdout.strip()
 
 
-def setup_workspace(workspace_path: Path, version_name: str, commit_hash: str = ''):
+def setup_workspace(workspace_path: Path, version_name: str, commit_hash: str = ""):
     """Prepares a clean workspace for an evaluation run."""
     console.print(f"\n[bold cyan]Setting up '{version_name}' workspace...[/bold cyan]")
 
@@ -108,7 +121,6 @@ def setup_workspace(workspace_path: Path, version_name: str, commit_hash: str = 
     code_dir = workspace_path / "code"
     venv_dir = workspace_path / "venv"
     # Handle OS-specific executable paths
-    pip_executable = venv_dir / "Scripts" / "pip.exe" if sys.platform == "win32" else venv_dir / "bin" / "pip"
 
     # 1. Get the source code
     if version_name == "local":
@@ -117,7 +129,7 @@ def setup_workspace(workspace_path: Path, version_name: str, commit_hash: str = 
         shutil.copytree(
             PROJECT_ROOT,
             code_dir,
-            ignore=shutil.ignore_patterns(".git", ".eval_harness", "__pycache__", "*.pyc", ".idea"),
+            ignore=shutil.ignore_patterns(".git", ".eval_harness", "__pycache__", "*.pyc", ".idea", ".venv"),
         )
     else:
         console.print(f"  -> Exporting code from {version_name} ({commit_hash})...")
@@ -126,13 +138,28 @@ def setup_workspace(workspace_path: Path, version_name: str, commit_hash: str = 
         git_archive_command = f"git archive {commit_hash} | tar -x -C {code_dir}"
         run_command(git_archive_command, cwd=PROJECT_ROOT)
 
-    # 2. Create virtual environment
-    console.print(f"  -> Creating virtual environment at [italic]{venv_dir}[/italic]...")
-    run_command([sys.executable, "-m", "venv", str(venv_dir)])
+    # 2. Setup environment using uv
+    console.print("  -> Setting up environment with uv...")
 
-    # 3. Install dependencies
-    console.print("  -> Installing project dependencies...")
-    run_command([str(pip_executable), "install", "-e", "."], cwd=code_dir, capture_output=True)
+    # Check if we should use 'uv sync' (new style) or 'uv pip' (legacy)
+    has_uv_lock = (code_dir / "uv.lock").exists()
+    has_pyproject = (code_dir / "pyproject.toml").exists()
+
+    if has_uv_lock and has_pyproject:
+        console.print("  -> Found uv.lock, using [bold]uv sync[/bold]...")
+        # uv sync creates the venv in .venv by default
+        run_command(["uv", "sync"], cwd=code_dir)
+        venv_dir = code_dir / ".venv"
+    else:
+        console.print("  -> Legacy setup, using [bold]uv pip install[/bold]...")
+        # Create venv explicitly
+        run_command(["uv", "venv", str(venv_dir)], cwd=code_dir)
+
+        # Determine python executable in the new venv for pip install
+        venv_python = venv_dir / "Scripts" / "python.exe" if sys.platform == "win32" else venv_dir / "bin" / "python"
+
+        # Install dependencies
+        run_command(["uv", "pip", "install", "-e", ".", "--python", str(venv_python)], cwd=code_dir)
 
     return code_dir, venv_dir
 
@@ -143,10 +170,10 @@ def run_evaluation(workspace_path: Path, venv_dir: Path, input_file: Path, pytho
     console.print(f"\n[bold green]Running evaluation for '{version_name}' on Python {python_version}...[/bold green]")
 
     code_dir = workspace_path / "code"
-    output_dir = workspace_path / "output" / python_version # Use a sub-dir for version-specific output
+    output_dir = workspace_path / "output" / python_version  # Use a sub-dir for version-specific output
     output_dir.mkdir(parents=True, exist_ok=True)
     results_file = output_dir / python_version / f"{input_file.stem}_0" / "results.json"
-    
+
     # Clean previous results for this version if they exist
     if results_file.exists():
         results_file.unlink()
@@ -172,7 +199,14 @@ def run_evaluation(workspace_path: Path, venv_dir: Path, input_file: Path, pytho
 
     return EvaluationResult.import_json(results_file)
 
-def compare_and_report(commit_results: EvaluationResult, local_results: EvaluationResult, report_path: Path, compare_to_commit: str, python_version: str):
+
+def compare_and_report(
+    commit_results: EvaluationResult,
+    local_results: EvaluationResult,
+    report_path: Path,
+    compare_to_commit: str,
+    python_version: str,
+):
     """Compares two sets of results and prints a detailed report to console and a file."""
     with report_path.open("w", encoding="utf-8") as f:
         report_console = Console(file=f)
@@ -197,7 +231,7 @@ def compare_and_report(commit_results: EvaluationResult, local_results: Evaluati
         commit_map = {path: cat for cat, paths in commit_dict.items() for path in paths}
         local_map = {path: cat for cat, paths in local_dict.items() for path in paths}
         all_paths = set(commit_map.keys()) | set(local_map.keys())
-        
+
         movement_matrix = {cat: {cat2: 0 for cat2 in categories} for cat in categories}
         for path in all_paths:
             from_cat = commit_map.get(path)
@@ -216,11 +250,11 @@ def compare_and_report(commit_results: EvaluationResult, local_results: Evaluati
                 if from_cat == to_cat:
                     style = "blue"
                 elif from_cat == "success":
-                    style = "bold red" # Regression from success
+                    style = "bold red"  # Regression from success
                 elif to_cat == "success":
-                    style = "bold green" # Improvement to success
+                    style = "bold green"  # Improvement to success
                 else:
-                    style = "tan" # Side-move
+                    style = "tan"  # Side-move
                 row.append(f"[{style}]{'+' if from_cat != to_cat else ''}{count}[/{style}]")
             table.add_row(*row)
 
@@ -233,10 +267,7 @@ def compare_and_report(commit_results: EvaluationResult, local_results: Evaluati
                 if from_cat == to_cat:
                     continue
 
-                moved_paths = sorted([
-                    p for p in all_paths
-                    if commit_map.get(p) == from_cat and local_map.get(p) == to_cat
-                ])
+                moved_paths = sorted([p for p in all_paths if commit_map.get(p) == from_cat and local_map.get(p) == to_cat])
 
                 if not moved_paths:
                     continue
@@ -254,8 +285,8 @@ def compare_and_report(commit_results: EvaluationResult, local_results: Evaluati
                 report_console.print(f"\n{title}")
                 for p in moved_paths:
                     console.print(f"- {p}")
-                    report_console.print(f"- {p}")
-        
+                    report_console.print(f"- {p}", soft_wrap=True)
+
         # 3. New and Removed Items
         new_items = sorted([p for p in all_paths if commit_map.get(p) is None])
         removed_items = sorted([p for p in all_paths if local_map.get(p) is None])
@@ -268,7 +299,7 @@ def compare_and_report(commit_results: EvaluationResult, local_results: Evaluati
                     line = format_func(item)
                     console.print(line)
                     report_console.print(line)
-        
+
         print_list_section(
             "\n[bold blue]New Items[/bold blue]",
             new_items,
@@ -283,12 +314,41 @@ def compare_and_report(commit_results: EvaluationResult, local_results: Evaluati
 
     console.print(f"\n-> Comparison report saved to [italic]{report_path}[/italic]")
 
+
 @click.command()
-@click.option('--input-file', required=True, type=click.Path(exists=True, dir_okay=False, resolve_path=True, path_type=Path), help='Path to the input file listing test cases.')
-@click.option('--python-version', 'python_versions', multiple=True, type=str, help='Python version to evaluate. Can be specified multiple times. Defaults to all supported versions.', default=SUPPORTED_PYTHON_VERSIONS)
-@click.option('--compare-to-commit', type=str, help='The git commit hash to compare to. Defaults to HEAD.', default='HEAD')
-@click.option('--no-cache', is_flag=True, default=False, help='Force re-evaluation of the comparison commit for all specified Python versions.')
-def main(input_file: Path, python_versions: list[str], compare_to_commit: str, no_cache: bool):
+@click.option(
+    "--input-file",
+    required=True,
+    type=click.Path(exists=True, dir_okay=False, resolve_path=True, path_type=Path),
+    help="Path to the input file listing test cases.",
+)
+@click.option(
+    "--python-version",
+    "python_versions",
+    multiple=True,
+    type=str,
+    help="Python version to evaluate. Can be specified multiple times. Defaults to all supported versions.",
+    default=SUPPORTED_PYTHON_VERSIONS,
+)
+@click.option(
+    "--compare-to-commit",
+    type=str,
+    help="The git commit hash to compare to. Defaults to HEAD.",
+    default="HEAD",
+)
+@click.option(
+    "--no-cache",
+    is_flag=True,
+    default=False,
+    help="Force re-evaluation of the comparison commit for all specified Python versions.",
+)
+@click.option(
+    "--no-cleanup",
+    is_flag=True,
+    default=False,
+    help="Do not clean up workspaces after evaluation.",
+)
+def main(input_file: Path, python_versions: list[str], compare_to_commit: str, no_cache: bool, no_cleanup: bool):
     """
     An evaluation framework to compare the performance of the current project
     state against a previous git commit.
@@ -297,11 +357,11 @@ def main(input_file: Path, python_versions: list[str], compare_to_commit: str, n
     run_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     commit_version = compare_to_commit
-    if compare_to_commit.lower() == 'head':
+    if compare_to_commit.lower() == "head":
         compare_to_commit = get_head_commit_hash()
         console.print(f"[bold green]Resolved HEAD to commit {compare_to_commit}.[/bold green]")
     else:
-        compare_to_commit = compare_to_commit[:7].lower() # shorten and lowercase for consistency 
+        compare_to_commit = compare_to_commit[:7].lower()  # shorten and lowercase for consistency
 
     COMMIT_WORKSPACE = HARNESS_DIR / compare_to_commit
 
@@ -322,7 +382,7 @@ def main(input_file: Path, python_versions: list[str], compare_to_commit: str, n
         else:
             if commit_venv_dir is None:
                 _, commit_venv_dir = setup_workspace(COMMIT_WORKSPACE, commit_version, compare_to_commit)
-            
+
             assert commit_venv_dir is not None
             commit_results = run_evaluation(COMMIT_WORKSPACE, commit_venv_dir, input_file, python_version)
             commit_results.export_json(cached_result_file)
@@ -330,7 +390,7 @@ def main(input_file: Path, python_versions: list[str], compare_to_commit: str, n
 
         # --- Local Evaluation ---
         local_results = run_evaluation(LOCAL_WORKSPACE, local_venv_dir, input_file, python_version)
-        
+
         # --- Save Local Results Artifact ---
         local_artifact_path = CACHE_DIR / python_version / f"local_results_{run_timestamp}.json"
         local_results.export_json(local_artifact_path)
@@ -338,14 +398,22 @@ def main(input_file: Path, python_versions: list[str], compare_to_commit: str, n
 
         # --- Comparison ---
         report_artifact_path = CACHE_DIR / python_version / f"comparison_report_{run_timestamp}.txt"
-        compare_and_report(commit_results, local_results, report_artifact_path, compare_to_commit, python_version)
+        compare_and_report(
+            commit_results,
+            local_results,
+            report_artifact_path,
+            compare_to_commit,
+            python_version,
+        )
 
     # --- Final Cleanup ---
-    console.print("\n[bold]Cleaning up workspaces...[/bold]")
-    if commit_venv_dir is not None:
-        shutil.rmtree(COMMIT_WORKSPACE)
-    shutil.rmtree(LOCAL_WORKSPACE)
-    console.print("Done.")
+    if not no_cleanup:
+        console.print("\n[bold]Cleaning up workspaces...[/bold]")
+        if commit_venv_dir is not None:
+            shutil.rmtree(COMMIT_WORKSPACE)
+        shutil.rmtree(LOCAL_WORKSPACE)
+        console.print("Done.")
+
 
 if __name__ == "__main__":
     main()

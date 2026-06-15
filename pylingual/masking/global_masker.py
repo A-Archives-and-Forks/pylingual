@@ -56,6 +56,8 @@ class Masker:
     blacklist = [
         "__doc__",
         "__annotations__",
+        "__conditional_annotations__",
+        "__annotate__",
         "__qualname__",
         "__class__",
         "return",  # for return annotations
@@ -69,7 +71,7 @@ class Masker:
 
     def mask(self, tok):
         """Mask a token, must be in the global_table."""
-        return self.global_tab[tok] if not any(tok == t and type(tok) == type(t) for t in self.blacklist) else tok
+        return self.global_tab[tok] if not any(tok == t and type(tok) is type(t) for t in self.blacklist) else tok
 
     def unmask(self, value):
         """Unmask a token, value must be a metatoken value in the global_table; or this function will fail loudly"""
@@ -101,6 +103,8 @@ class Masker:
                 func_info.append("annotations")
         if bool(flags_make_func & 0b1000):  # b_free_vars
             func_info.append("closures")
+        if bool(flags_make_func & 0b10000):  # annotate function
+            func_info.append("annotations-func")
 
         # flags from the target code object
         flags_co = int(target_co.co_flags)
@@ -191,6 +195,8 @@ class Masker:
                             continue  # don't mask None
                         elif type(const) in (list, tuple, frozenset):
                             consts[idx] = type(const)(replace_list(list(const)))
+                        elif type(const) is slice:
+                            consts[idx] = f"{self.mask(const.start)} : {self.mask(const.stop)} : {self.mask(const.step)}"
                         else:
                             consts[idx] = self.mask(const)
                     return consts
@@ -210,6 +216,8 @@ class Masker:
                 # demote quotes one layer
                 arg_repr = repr(type(inst.argval)(consts)).replace("'", "").replace('"', "'")
                 view = f"{inst.opname} , {arg_repr}"
+            elif type(inst.argval) is slice:
+                view = f"{inst.opname} , {self.mask(inst.argval.start)} : {self.mask(inst.argval.stop)} : {self.mask(inst.argval.step)}"
             else:
                 view = f"{inst.opname} , {self.mask(inst.bytecode.resolve_namespace(inst.argval))}"
 
@@ -219,6 +227,9 @@ class Masker:
             if inst.is_jump:
                 jump_direction_indicator = "v~>" if inst.target.offset > inst.offset else "^~>"
                 view = f"{inst.opname} {inst.argrepr} {jump_direction_indicator}"
+            elif inst.opname == "LOAD_SMALL_INT":
+                # Treat LOAD_SMALL_INT (X) like LOAD_CONST
+                view = f"{inst.opname} , {self.mask(inst.argval)}"
             elif inst.optype is None or inst.optype == "??" or inst.optype == "encoded_arg":
                 # don't mask IS_OP args
                 view = f"{inst.opname} , {inst.argrepr if inst.argrepr else inst.argval}"
